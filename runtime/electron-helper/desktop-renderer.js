@@ -136,12 +136,24 @@ async function main() {
   const work = await bridge.getWorkArea().catch(() => null)
   const area = work && work.width > 0 ? work : { x: 0, y: 0, width: 1280, height: 800 }
 
-  const rootEl = document.getElementById('dsh-eta-root')
-  const cardRect = rootEl ? rootEl.getBoundingClientRect() : null
-
-  /** 卡片尺寸：面板开关时用它算窗口该多大。 */
-  const cardW = Math.round((cardRect && cardRect.width) || 236)
-  const cardH = Math.round((cardRect && cardRect.height) || 170)
+  /**
+   * 卡片**布局**尺寸（未缩放）。
+   *
+   * 必须用 offsetWidth/offsetHeight，不能用 getBoundingClientRect()：
+   * 卡片是 `transform: scale()` 缩放的，rect 给的是**缩放后**的视觉尺寸 ——
+   * 拿它算窗口，25% 时会开出 59px 宽的窗，而布局盒其实还是 236px。
+   *
+   * 每次现量、不缓存：折叠会把卡片高度从 146px 变成 42px，窗口要跟着缩；
+   * 缓存启动时的值就会一直留着一大片透明区。
+   */
+  function currentCardSize() {
+    const el = document.getElementById('dsh-eta-root')
+    if (!el) return { w: 236, h: 170 }
+    return {
+      w: Math.round(el.offsetWidth || 236),
+      h: Math.round(el.offsetHeight || 170),
+    }
+  }
 
   /**
    * 按「卡片 + 面板（可选）」算出窗口要多大。
@@ -151,10 +163,11 @@ async function main() {
    * 早先固定 300×210，面板开出来只看得见一半。
    */
   function boundsFor(panel) {
+    const card = currentCardSize()
     const size = geometry.windowSizeFor({
       area,
-      cardW,
-      cardH,
+      cardW: card.w,
+      cardH: card.h,
       panelW: (panel && panel.panelWidth) || 252,
       panelH: (panel && panel.panelHeight) || 320,
       edge: PAD,

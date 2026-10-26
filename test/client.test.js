@@ -1040,6 +1040,35 @@ test('缩到很小时留一块能点开的逃生热区', async () => {
   assert.equal(ctx.doc.getElementById('dsh-eta-hotspot'), null, 'hotspot must be removed when zooming back up')
 })
 
+test('折叠 + 小缩放时热区改贴左角，不压住展开按钮', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const panel = await openPanel(ctx)
+  const zoom = inputOf(panel, 'range')
+  zoom.value = '45'
+  zoom.dispatch('input')
+
+  // 展开态：热区贴右下角（卡片本体在左侧，右下角外侧不挡按钮）
+  const expandedSpot = ctx.doc.getElementById('dsh-eta-hotspot')
+  assert.ok(expandedSpot, 'hotspot must exist below 60% zoom')
+  const expandedLeft = parseFloat(expandedSpot.style.left)
+
+  // 折叠：卡片只剩 42px 高，贴右下角会正好压住 `+` 和 `⚙`
+  // （实测 45% 时热区 x116~138、按钮 x114~132 → 展不开就再也回不去）
+  const toggle = headOf(ctx).children[1]
+  toggle.dispatch('click', { stopPropagation() {} })
+  assert.equal(ctx.widget.classList.contains('dsh-eta-root-collapsed'), true)
+
+  const spot = ctx.doc.getElementById('dsh-eta-hotspot')
+  assert.ok(spot, 'hotspot still needed when collapsed at small zoom')
+  const collapsedLeft = parseFloat(spot.style.left)
+
+  // 卡片 rect 在垫片里是默认值；关键是**位置换了**：从左边缘起算而不是右边缘
+  assert.ok(collapsedLeft < expandedLeft,
+    'when collapsed the hotspot must move to the card\'s left edge so it stops '
+    + 'covering the expand button (got left=' + collapsedLeft + ', was ' + expandedLeft + ')')
+})
+
 test('隐藏挂件时热区一起消失', async () => {
   const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
   await new Promise((resolve) => setImmediate(resolve))

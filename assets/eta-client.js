@@ -317,6 +317,10 @@
     '.dsh-eta-root-collapsed .dsh-eta-body>*:not(.dsh-eta-bar){display:none}',
     '.dsh-eta-root-collapsed .dsh-eta-bar{margin-top:0}',
     '.dsh-eta-root-collapsed .dsh-eta-title{display:none}',
+    // 折叠时按钮提亮：卡片缩到 19px 高时按钮只有 8px，`.55` 的透明度在浅色壁纸上
+    // 基本看不见，用户会找不到「展开」在哪。
+    '.dsh-eta-root-collapsed .dsh-eta-btn{opacity:.8}',
+    '.dsh-eta-root-collapsed .dsh-eta-btn:hover{opacity:1}',
     // 没有进度可显示时退回标题文字 —— 否则折叠后就剩两个孤零零的按钮，
     // 用户认不出这是什么。（进度条本身在 data-on=0 时也是收起的。）
     '.dsh-eta-root-collapsed[data-bar="0"] .dsh-eta-title{display:block}',
@@ -1233,7 +1237,9 @@
    * 它是 fixed 定位、不参与缩放，所以 25% 时依然好点。
    */
   function updateHotspot() {
-    if (!nodes) return
+    // appearance 在挂载流程里晚于 applyCollapsed() 才赋值（见 build 的末尾），
+    // 所以这里必须自己防御 —— 辅助函数不该因为调用时机就把整个挂载搞挂。
+    if (!nodes || !appearance) return
     var needHotspot = appearance.zoom < 60
     if (!needHotspot) {
       if (nodes.hotspot && nodes.hotspot.parentNode) {
@@ -1256,10 +1262,18 @@
     }
     var rect = nodes.root.getBoundingClientRect()
     var size = 44
-    // 贴在卡片右下角外侧：不盖住卡片本体，也不会被缩放影响大小。
+    /**
+     * 贴在卡片**角外侧**：一半在卡片内、一半在外，不参与缩放，所以 25% 时也好点。
+     *
+     * 折叠时改贴**左下角**：折叠卡片只有 19~42px 高，贴右下角的话那块 22×22 的
+     * 热区会正好压住 `+` 和 `⚙`（实测 45% 缩放时热区 x116~138、按钮 x114~132）
+     * —— 点不动 `+` 就再也展不开了，逃生门反而成了牢门。
+     * 左下角只有进度条，盖住无所谓。
+     */
+    var anchorLeft = collapsed ? rect.left : rect.left + rect.width - size
     nodes.hotspot.style.width = size + 'px'
     nodes.hotspot.style.height = size + 'px'
-    nodes.hotspot.style.left = Math.round(rect.left + rect.width - size / 2) + 'px'
+    nodes.hotspot.style.left = Math.round(anchorLeft) + 'px'
     nodes.hotspot.style.top = Math.round(rect.top + rect.height - size / 2) + 'px'
   }
 
@@ -1364,6 +1378,10 @@
     if (collapsed) nodes.root.classList.add('dsh-eta-root-collapsed')
     else nodes.root.classList.remove('dsh-eta-root-collapsed')
     nodes.toggle.textContent = collapsed ? '+' : '−'
+    // 桌面端：卡片高度从 146px 变成 42px，窗口得跟着缩 ——
+    // 否则那片透明区一直留着（视觉上无所谓，但它会一直参与命中判定的计算）。
+    emitDesktop('dsh-eta-desktop-fit', { open: false })
+    updateHotspot()
   }
 
   /* ---------- 拖动（位置记住） ---------- */
