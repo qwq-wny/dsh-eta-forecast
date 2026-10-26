@@ -181,3 +181,92 @@ test('未知事件与畸形载荷一律忽略，不抛错', () => {
   assert.doesNotThrow(() => observeEvent(state, { type: 'todo/write', data: {} }, T0))
   assert.doesNotThrow(() => forecastSession(emptySession('x'), T0))
 })
+
+/* ---------- 没有 todo 清单时的兜底（这是线上真实踩到的场景） ---------- */
+
+/** 喂 n 个固定时长的步（start→end 各 stepMs）。 */
+function feedSteps(state, n, startAt, stepMs) {
+  let t = startAt
+  for (let i = 0; i < n; i++) {
+    observeEvent(state, { type: 'step/start', data: { turn: state.turn, step: i + 1 } }, t)
+    t += stepMs
+    observeEvent(state, { type: 'step/end', data: { turn: state.turn, step: i + 1 } }, t)
+  }
+  return t
+}
+
+test('完全没有 todo 清单时，靠步数也能给出 ETA（不再永远「看不出节奏」）', () => {
+  const state = startedSession()
+  // 一轮 178 步、一条 todo 都没写 —— 这是线上真实发生的情况。
+  const now = feedSteps(state, 20, T0 + 1000, 5000)
+  const snap = forecastSession(state, now + 1000)
+  assert.equal(snap.total, 0, 'no todo list at all')
+  assert.notEqual(snap.remainMs, null, 'steps fallback must produce an estimate')
+  assert.equal(snap.source, 'steps')
+  assert.ok(snap.etaAt !== null, 'ETA clock must be available')
+  assert.ok(snap.remainMs > 0 && snap.remainMs < 8 * 3600_000)
+})
+
+test('步数不够 2 个样本时仍然诚实地不报 ETA', () => {
+  const state = startedSession()
+  const now = feedSteps(state, 1, T0 + 1000, 5000)
+  const snap = forecastSession(state, now + 1000)
+  assert.equal(snap.remainMs, null, 'one sample is not a rhythm')
+  assert.equal(snap.confidence, 'none')
+})
+
+test('跨轮步数历史让「还剩多少」更准，且离群轮次不污染中位数', () => {
+  const state = startedSession()
+  // 历史：6 轮分别 23/19/7/7/26/178 步 —— 178 是真实存在的抽风轮次。
+  state.stepHistory.push(23, 19, 7, 7, 26, 178)
+  const now = feedSteps(state, 5, T0 + 1000, 5000)
+  const snap = forecastSession(state, now + 1000)
+  assert.equal(snap.source, 'steps')
+  // 中位数是 21，不是平均数 43.3；5 步已走 → 还剩约 16 步 × 5s = 80s
+  assert.ok(snap.remainMs < 180_000,
+    'median must resist the 178-step outlier, got ' + snap.remainMs)
+  assert.ok(snap.remainMs > 20_000, 'but still a sane positive estimate, got ' + snap.remainMs)
+})
+
+test('中途接管：插件在轮次进行中加载，也能积累步长样本', () => {
+  // 模拟 DSH 已经在跑、插件才被加载 —— 这一轮的 turn/start 从未收到。
+  const state = emptySession('mid')
+  const now = feedSteps(state, 5, T0 + 1000, 4000)
+  assert.equal(state.active, true, 'step events must adopt the running turn')
+  assert.equal(state.stepDurations.length, 5, 'step samples must accumulate')
+  const snap = forecastSession(state, now + 500)
+  assert.notEqual(snap.remainMs, null, 'mid-turn adoption must still produce an ETA')
+})
+
+test('中途接管的那一轮不写进跨轮历史（时长与步数都不完整）', () => {
+  const state = emptySession('mid')
+  const now = feedSteps(state, 6, T0 + 1000, 3000)
+  observeEvent(state, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }, now + 1000)
+  assert.equal(state.history.length, 0, 'partial turn must not pollute turn-duration history')
+  assert.equal(state.stepHistory.length, 0, 'partial turn must not pollute step-count history')
+
+  // 正常轮次（收到 turn/start）仍然要记
+  observeEvent(state, { type: 'turn/start', data: { turn: 2 } }, now + 2000)
+  const end = feedSteps(state, 4, now + 2500, 3000)
+  observeEvent(state, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } }, end + 500)
+  assert.equal(state.history.length, 1, 'a fully observed turn must be recorded')
+  assert.equal(state.stepHistory.length, 1)
+  assert.equal(state.stepHistory[0], 4)
+})
+
+test('被中断的轮次不记进步数历史（步数偏低会拉低后续估计）', () => {
+  const state = startedSession()
+  feedSteps(state, 3, T0 + 1000, 2000)
+  observeEvent(state, { type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted' } } }, T0 + 30_000)
+  assert.equal(state.stepHistory.length, 0, 'aborted turn is not a typical turn')
+  assert.equal(state.history.length, 1, 'but its duration is still a real duration')
+})
+
+test('步数外推的置信度不会冒充「较准」', () => {
+  const state = startedSession()
+  state.stepHistory.push(20, 22, 24)
+  const now = feedSteps(state, 12, T0 + 1000, 3000)
+  const snap = forecastSession(state, now + 500)
+  assert.equal(snap.source, 'steps')
+  assert.notEqual(snap.confidence, 'high', 'steps-only estimate must not claim high confidence')
+})
