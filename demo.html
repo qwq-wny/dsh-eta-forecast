@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh-eta-forecast · 外观预览</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; min-height: 100vh; padding: 40px 24px 120px;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    background: #f6f7f9; color: #1f2430; box-sizing: border-box;
+  }
+  @media (prefers-color-scheme: dark) { body { background: #14161a; color: #e8eaee; } }
+  .page { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  p.lead { margin: 0 0 24px; font-size: 13px; line-height: 1.75; opacity: .74; }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; padding: 1px 4px;
+    border-radius: 4px; background: rgba(127,127,127,.16); }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 26px; }
+  .bar button {
+    border: 1px solid rgba(127,127,127,.42); background: transparent; color: inherit;
+    border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 12.5px; cursor: pointer;
+  }
+  .bar button[data-on="1"] { background: rgba(127,127,127,.18); border-color: rgba(127,127,127,.6); font-weight: 600; }
+  .note { font-size: 12px; line-height: 1.8; opacity: .58; }
+  .note b { opacity: .9; }
+  /* 页面里必须存在 #root，并且里面有 composer 标记 —— 挂件靠它判断「这是主聊天界面」。 */
+  #root { min-height: 1px; }
+  #root .fake-composer { display: none; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>dsh-eta-forecast · 外观预览</h1>
+  <p class="lead">
+    这一页跑的是<b>真实的挂件脚本</b> <code>assets/eta-client.js</code>，数据由本页伪造的
+    <code>fetch</code> 喂进去。挂件会像在 DSH 里一样出现在<b>右下角</b>：可拖动、可收起、可隐藏。
+    它只用来在重启 DSH 之前先看一眼长什么样，不参与插件运行。
+  </p>
+
+  <div class="bar" id="bar"></div>
+
+  <p class="note">
+    <b>注意：</b>切换状态后最多等 2 秒（挂件每 2 秒轮询一次），数字会自己变过去。<br>
+    <b>关掉预览：</b>点挂件标题行的 <code>×</code>；想再看回来就在右下角双击。<br>
+    公式全部在宿主侧 <code>lib/forecast.js</code>，这一页只是复用了渲染代码。
+  </p>
+</div>
+
+<div id="root"><div class="fake-composer" data-composer-input="true"></div></div>
+
+<script>
+(function () {
+  var now = Date.now()
+  var MIN = 60 * 1000
+
+  var CASES = {
+    progress: {
+      label: '① 有清单 · 中等置信',
+      snap: {
+        id: 'demo-1', title: '重构估算核心', phase: 'running',
+        elapsedMs: 8 * MIN, remainMs: 6 * MIN, etaAt: now + 6 * MIN,
+        confidence: 'medium', source: 'progress',
+        progress: 0.57, total: 7, completed: 4, inProgress: 0, pending: 3,
+        currentTask: '把挂起时长从工期里扣掉', steps: 11,
+        paused: false, pausedMs: 0, updatedAt: now,
+      },
+    },
+    nosample: {
+      label: '② 刚开始 · 样本不足',
+      snap: {
+        id: 'demo-2', title: '给插件写文档', phase: 'running',
+        elapsedMs: 23 * 1000, remainMs: null, etaAt: null,
+        confidence: 'none', source: 'none',
+        progress: 0, total: 0, completed: 0, inProgress: 0, pending: 0,
+        currentTask: '', steps: 1,
+        paused: false, pausedMs: 0, updatedAt: now,
+      },
+    },
+    paused: {
+      label: '③ 等你授权 · 不计工期',
+      snap: {
+        id: 'demo-3', title: '装到 desktop profile', phase: 'running',
+        elapsedMs: 2 * MIN, remainMs: 3 * MIN, etaAt: now + 3 * MIN,
+        confidence: 'low', source: 'unit',
+        progress: 0.33, total: 3, completed: 1, inProgress: 0, pending: 2,
+        currentTask: '等你确认安装方式', steps: 5,
+        paused: true, pausedMs: 41 * 1000, updatedAt: now,
+      },
+    },
+    done: {
+      label: '④ 上一轮已完成',
+      snap: {
+        id: 'demo-4', title: '跑通 31 个测试', phase: 'done', endReason: 'completed',
+        elapsedMs: 11 * MIN + 20 * 1000, remainMs: null, etaAt: null,
+        confidence: 'none', source: 'none',
+        progress: 1, total: 5, completed: 5, inProgress: 0, pending: 0,
+        currentTask: '', steps: 19,
+        paused: false, pausedMs: 0, updatedAt: now,
+      },
+    },
+  }
+
+  var current = 'progress'
+
+  // 每次轮询都按「当前选中的状态」回答；ETA 时刻跟着真实时钟走，看起来才像活的。
+  window.fetch = function () {
+    var snap = CASES[current].snap
+    var live = Object.assign({}, snap)
+    if (snap.phase === 'running') {
+      var elapsed = Date.now() - now + snap.elapsedMs
+      live.elapsedMs = elapsed
+      if (snap.remainMs !== null) {
+        live.remainMs = Math.max(30 * 1000, snap.remainMs - (Date.now() - now))
+        live.etaAt = Date.now() + live.remainMs
+      }
+    }
+    live.updatedAt = Date.now()
+    return Promise.resolve({
+      ok: true, status: 200,
+      json: function () { return Promise.resolve({ ok: true, now: Date.now(), sessions: [live] }) },
+    })
+  }
+
+  var bar = document.getElementById('bar')
+  Object.keys(CASES).forEach(function (key) {
+    var button = document.createElement('button')
+    button.type = 'button'
+    button.textContent = CASES[key].label
+    button.setAttribute('data-on', key === current ? '1' : '0')
+    button.addEventListener('click', function () {
+      current = key
+      Array.prototype.forEach.call(bar.children, function (child) { child.setAttribute('data-on', '0') })
+      button.setAttribute('data-on', '1')
+    })
+    bar.appendChild(button)
+  })
+})()
+</script>
+<script src="./assets/eta-client.js"></script>
+</body>
+</html>
