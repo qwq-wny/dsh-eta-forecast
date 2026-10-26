@@ -1670,6 +1670,20 @@
     }
   }
 
+  /**
+   * 副行末尾的精度提示：最近几轮典型偏多少。
+   *
+   * 挂在「已跑 X」后面，如「已跑 12 分 · 近几轮偏差约 25%」。
+   * 样本不足（<2 轮）时返回空串 —— 不编数字，也别让一行全是噪音。
+   */
+  function accuracySuffix(accuracy) {
+    if (!accuracy || !(accuracy.samples >= 2)) return ''
+    if (typeof accuracy.mape !== 'number' || !isFinite(accuracy.mape)) return ''
+    var pct = Math.round(accuracy.mape * 100)
+    if (pct < 1) return ''
+    return ' · 近几轮偏差约 ' + pct + '%'
+  }
+
   function render(snapshot) {
     if (!nodes) return
     current = snapshot
@@ -1717,11 +1731,19 @@
     }
 
     if (snapshot.overtime) {
-      // 已经跑过预测终点：不再演倒计时，改显「已超时 N 分」。
-      // 大字换成已跑时长 —— 这时候唯一诚实的信息是「跑了多久」。
+      // 跑过预测终点：主显示换成「已跑了多久 / 已超时多久」。
+      var over = durationOf(snapshot.overtimeMs || 0)
       nodes.clockBig.textContent = durationOf(snapshot.elapsedMs) || '—'
-      nodes.clockUnit.textContent = '已超时 ' + durationOf(snapshot.overtimeMs || 0)
-      nodes.sub.textContent = '比预测的慢 —— 继续等，或这轮先不管它'
+      nodes.clockUnit.textContent = '已超时 ' + over
+      // **关键**：超时后仍然给重估值。以前这里是一句「比预测的慢」就没了，
+      // 实测那一轮连续 88 分钟没告诉用户任何时间信息。
+      // 现在的副行是「重估还要 M 分」——按现有样本重新算的，比沉默有用得多。
+      if (typeof snapshot.remainMs === 'number' && isFinite(snapshot.remainMs)) {
+        nodes.sub.textContent = '重估还要 ' + durationOf(snapshot.remainMs)
+          + '（' + (clockOf(snapshot.etaAt) || '—') + '）'
+      } else {
+        nodes.sub.textContent = '超时了，暂时重估不出来'
+      }
     } else if (snapshot.remainMs === null) {
       nodes.clockBig.textContent = '—'
       nodes.clockUnit.textContent = ''
@@ -1730,6 +1752,7 @@
       nodes.clockBig.textContent = clockOf(snapshot.etaAt) || '—'
       nodes.clockUnit.textContent = '左右完成 · 还有 ' + durationOf(snapshot.remainMs)
       nodes.sub.textContent = '已跑 ' + durationOf(snapshot.elapsedMs)
+        + accuracySuffix(snapshot.accuracy)
     }
 
     // 进度条：有清单就用清单完成度，没有清单用步数代理（见 lib/forecast.js 的 progressOf）。
@@ -1763,6 +1786,18 @@
     var confidence = snapshot.confidence || 'none'
     nodes.badge.textContent = CONFIDENCE_LABEL[confidence] || '样本不足'
     nodes.badge.setAttribute('data-confidence', confidence)
+    // 徽章的 tooltip 带上「近几轮偏差」——置信度标签说「粗略/中等」，
+    // 但用户真正想知道的是「到底差多少」。有样本时把实测偏差摆出来。
+    var acc = snapshot.accuracy
+    if (acc && acc.samples >= 2 && typeof acc.mape === 'number') {
+      var biasText = typeof acc.bias === 'number'
+        ? (acc.bias > 0.02 ? '，习惯估长' : (acc.bias < -0.02 ? '，习惯估短' : '，无明显偏向'))
+        : ''
+      nodes.badge.title = '最近 ' + acc.samples + ' 轮：典型偏差约 '
+        + Math.round(acc.mape * 100) + '%' + biasText
+    } else {
+      nodes.badge.removeAttribute('title')
+    }
 
     nodes.task.textContent = snapshot.currentTask ? '正在做：' + snapshot.currentTask : ''
     if (snapshot.paused) {

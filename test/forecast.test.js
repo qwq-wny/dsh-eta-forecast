@@ -273,7 +273,7 @@ test('步数外推的置信度不会冒充「较准」', () => {
 
 /* ---------- 超时：超过预测之后不再演倒计时，并把误差学回来 ---------- */
 
-test('跑过预测终点（含宽容期）后标记超时，remainMs 归空', () => {
+test('跑过预测终点（含宽容期）后标记超时，且**仍然给重估时间**', () => {
   const state = startedSession()
   state.stepHistory.push(20, 20, 20) // 一轮通常 20 步
   // 先拿一次预测（锚定 turnFirstPredictedMs）
@@ -286,9 +286,13 @@ test('跑过预测终点（含宽容期）后标记超时，remainMs 归空', ()
   const late = feedSteps(state, 8, t1 + 2000, 60_000) // 每步 60 秒：迅速越过预测
   const snap = forecastSession(state, late + 1000)
   assert.equal(snap.overtime, true, 'must be flagged overtime past the anchor + grace')
-  assert.equal(snap.remainMs, null, 'overtime must stop pretending a countdown')
-  assert.equal(snap.etaAt, null)
   assert.ok(snap.overtimeMs > 0, 'overtimeMs should measure how far past the deadline')
+  // 超时后**保留** remainMs：那是「按现有样本重估还要多久」。
+  // 之前这里归 null，结果整整一轮只显示「已超时 N 分」、再没有任何时间信息 ——
+  // 实测那轮因此连续 88 分钟什么都没告诉用户。
+  assert.ok(snap.remainMs > 0,
+    'a revised estimate must survive overtime (it is what the UI shows as 重估还要 M 分)')
+  assert.ok(snap.etaAt > snap.updatedAt, 'etaAt follows the revised estimate')
 })
 
 test('宽容期内不闪「超时」', () => {
@@ -429,4 +433,99 @@ test('已结束的轮次不把步数代理当进度（它已经 100% 了）', ()
   const snap = forecastSession(state, T0 + 31_000)
   assert.equal(snap.phase, 'done')
   assert.equal(snap.progressSource, 'none', 'a finished turn has no partial progress')
+})
+
+/* ---------- 准确性：成熟锚点 + 长先验参与 + 精度可度量 ---------- */
+
+test('超时锚点用「成熟预测」，不被最早那次乐观预测带偏', () => {
+  const state = startedSession()
+  state.stepHistory.push(20, 20, 20)
+  // 早期只有 1~2 个样本时给一次预测（最乐观）
+  const t1 = feedSteps(state, 2, T0 + 1000, 1000)
+  const early = forecastSession(state, t1 + 200)
+  assert.ok(early.remainMs > 0)
+
+  // 样本攒够之前，把步时拉长 —— 估计会显著变大
+  const t2 = feedSteps(state, 6, t1 + 500, 20_000)
+  const matured = forecastSession(state, t2 + 200)
+  assert.ok(matured.remainMs > early.remainMs,
+    'the mature estimate must be larger than the early optimistic one')
+
+  // 现在停在「早期预测的终点之后、成熟预测终点之前」：
+  // 老逻辑（锚定首次预测）会误报超时；新逻辑不该报。
+  const betweenEarlyAndMature = T0 + 1000 + (early.remainMs + 60_000)
+  const snap = forecastSession(state, betweenEarlyAndMature)
+  assert.equal(snap.overtime, false,
+    'must not declare overtime based on the fragile first prediction '
+    + '(the mature estimate still says there is time)')
+})
+
+test('没有 todo 清单时，整轮时长先验与步数一起参与（不再排在最后）', () => {
+  const state = startedSession()
+  // 两轮历史：这类一轮通常 10 分钟
+  state.history.push(600_000, 620_000)
+  state.stepHistory.push(20, 20)
+  const now = feedSteps(state, 4, T0 + 1000, 3000)
+  const snap = forecastSession(state, now + 500)
+  // 两条来源都进了加权 —— 历史先验不再只是「什么都没有时的兜底」
+  assert.ok(snap.source.indexOf('history') !== -1,
+    'the whole-turn duration prior must participate alongside steps, got ' + snap.source)
+})
+
+test('只有一轮历史时它只做微调，不能盖过步数证据', () => {
+  const state = startedSession()
+  state.history.push(600_000) // 上一轮 10 分钟
+  state.stepHistory.push(20)
+  const now = feedSteps(state, 4, T0 + 1000, 3000)
+  const snap = forecastSession(state, now + 500)
+  // 单样本参与（约束 a 低权重），但步数先验仍主导 —— 来源里两者都在，
+  // 且结果不该被「上一轮 10 分钟」整个拽走。
+  assert.ok(snap.source.indexOf('steps') !== -1,
+    'the step evidence must still be present, got ' + snap.source)
+  const soloSteps = startedSession()
+  soloSteps.stepHistory.push(20)
+  const t2 = feedSteps(soloSteps, 4, T0 + 1000, 3000)
+  const soloSnap = forecastSession(soloSteps, t2 + 500)
+  assert.ok(snap.remainMs > soloSnap.remainMs,
+    'one learned turn should pull the estimate up, but only modestly: '
+    + snap.remainMs + ' vs ' + soloSnap.remainMs)
+  assert.ok(snap.remainMs < 600_000,
+    'it must not be dominated by the previous turn duration')
+})
+
+test('刚开局、只有一轮历史、还没有步数样本时**不报数字**', () => {
+  const state = startedSession()
+  state.history.push(600_000) // 上一轮 10 分钟
+  // 一个步长样本都没有，只有上一轮那条记录 —— 这不是估计，是把上一轮硬套过来
+  const snap = forecastSession(state, T0 + 2000)
+  assert.equal(snap.remainMs, null,
+    'a lone history sample with no other evidence must not produce an ETA')
+})
+
+test('精度可度量：轮次结束时记下「预测 vs 实际」', () => {
+  const state = startedSession()
+  state.stepHistory.push(20, 20, 20)
+  const t1 = feedSteps(state, 6, T0 + 1000, 3000)
+  forecastSession(state, t1 + 500)
+  // 预测总时长约 42s，实际跑到 ~300s —— 明显估短
+  const end = feedSteps(state, 4, t1 + 2000, 70_000)
+  observeEvent(state, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }, end + 500)
+
+  assert.ok(state.accuracyHistory.length === 1, 'one completed turn → one accuracy sample')
+  const rec = state.accuracyHistory[0]
+  assert.ok(rec.actual > 0 && rec.predicted > 0)
+  assert.ok(rec.errorRatio < 0, 'we under-estimated, so the signed error must be negative')
+
+  const snap = forecastSession(state, end + 1000)
+  assert.equal(snap.accuracy.samples, 1)
+  assert.ok(snap.accuracy.mape >= 0, 'mape is an absolute error')
+})
+
+test('精度摘要样本不足时返回 null，不编数字', () => {
+  const state = startedSession()
+  const now = feedSteps(state, 3, T0 + 1000, 2000)
+  const snap = forecastSession(state, now + 500)
+  assert.equal(snap.accuracy.samples, 0)
+  assert.equal(snap.accuracy.mape, null)
+  assert.equal(snap.accuracy.bias, null)
 })
