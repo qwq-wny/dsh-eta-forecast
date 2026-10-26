@@ -79,8 +79,22 @@ class FakeNode {
     if (at !== -1) list.splice(at, 1)
   }
 
+  /**
+   * 派发事件并**沿父链冒泡** —— 真实 DOM 就是这个行为。
+   *
+   * 挂件把拖动/右键监听挂在根节点上（用户要求「所有地方都能拖」），
+   * 如果垫片不冒泡，从子节点派发的事件就永远到不了根节点，
+   * 测出来的失败是垫片的假象，不是代码的问题。
+   */
   dispatch(type, event) {
-    for (const handler of this.listeners[type] || []) handler(event || {})
+    const payload = event || {}
+    if (payload.target === undefined) payload.target = this
+    let node = this
+    while (node) {
+      for (const handler of node.listeners[type] || []) handler(payload)
+      node = node.parentNode
+    }
+    return payload
   }
 
   getBoundingClientRect() {
@@ -362,19 +376,6 @@ test('收起按钮切换状态并写进 localStorage', async () => {
   assert.equal(saved.collapsed, true)
 })
 
-test('隐藏按钮把挂件藏起来，并能靠双击热区叫回来', async () => {
-  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
-  await new Promise((resolve) => setImmediate(resolve))
-  const head = ctx.widget.children[0]
-  const hide = head.children[2]
-  hide.dispatch('click', { stopPropagation() {} })
-  assert.equal(ctx.widget.getAttribute('data-hidden'), '1')
-
-  // 右下角双击
-  ctx.doc.dispatch('dblclick', { clientX: ctx.window.innerWidth - 10, clientY: ctx.window.innerHeight - 10 })
-  assert.equal(ctx.widget.getAttribute('data-hidden'), null)
-})
-
 test('宿主返回 3 次失败才清空显示（一次抖动不该抹掉 ETA）', async () => {
   const now = Date.now()
   const good = {
@@ -443,10 +444,14 @@ function buttonOf(node, label) {
 
 const CLICK = { stopPropagation() {} }
 
+/** 标题行里的按钮：[展开/收起, 齿轮]（「隐藏挂件」已按用户要求删除）。 */
+function headButtons(ctx) {
+  return ctx.widget.children[0].children.filter((child) => child.tagName === 'BUTTON')
+}
+
 /** 打开设置面板，返回面板节点。 */
 async function openPanel(ctx) {
-  const head = ctx.widget.children[0]
-  const gear = head.children[3]
+  const gear = ctx.widget.children[0].children[2]
   assert.ok(gear, 'gear button must exist in the title row')
   gear.dispatch('click', CLICK)
   const panel = ctx.doc.getElementById('dsh-eta-panel')
@@ -460,14 +465,26 @@ test('齿轮按钮打开设置面板，再点一次收起', async () => {
   await new Promise((resolve) => setImmediate(resolve))
 
   const panel = await openPanel(ctx)
-  assert.equal(ctx.widget.getAttribute('data-hidden'), null, 'opening settings must not hide the widget')
 
   // 面板是独立的顶层节点，不跟着挂件缩放变小
   assert.equal(panel.id, 'dsh-eta-panel')
   assert.equal(panel.parentNode, ctx.doc.body)
 
-  ctx.widget.children[0].children[3].dispatch('click', CLICK)
+  ctx.widget.children[0].children[2].dispatch('click', CLICK)
   assert.equal(panel.getAttribute('data-hidden'), '1')
+})
+
+test('标题行只剩「收起」和「齿轮」两个按钮（隐藏挂件已删除）', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const buttons = headButtons(ctx)
+  assert.equal(buttons.length, 2, 'expected exactly two title-row buttons, got ' + buttons.length)
+  assert.equal(buttons[0].textContent, '−', 'first is collapse')
+  assert.equal(buttons[1].textContent, '⚙', 'second is settings')
+  // 页面上不该再有任何「隐藏挂件」入口
+  const menu = openContextMenu(ctx)
+  const labels = menu.children.map((child) => child.textContent)
+  assert.equal(labels.indexOf('隐藏挂件'), -1, 'hiding must be gone from the menu, got ' + labels)
 })
 
 test('缩放滑块按比例缩卡片，并把值记进 localStorage', async () => {
@@ -612,13 +629,13 @@ test('点标题行上的按钮不会顺手把卡片拖走', async () => {
   const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
   await new Promise((resolve) => setImmediate(resolve))
   const head = ctx.widget.children[0]
-  const gear = head.children[3]
+  const gear = head.children[2]
 
   // 挂载时会把 right/bottom 折算成 left/top，所以基线不是 undefined。
   const baselineLeft = ctx.widget.style.left
   assert.ok(baselineLeft, 'mount must normalise the position to left/top')
 
-  // 模拟 pointerdown 落在齿轮上：target 是 BUTTON
+  // 模拟左键 pointerdown 落在齿轮上：target 是 BUTTON
   head.dispatch('pointerdown', { button: 0, target: gear, clientX: 10, clientY: 10, pointerId: 1 })
   head.dispatch('pointermove', { clientX: 400, clientY: 400, pointerId: 1 })
   head.dispatch('pointerup', { pointerId: 1 })
@@ -629,6 +646,49 @@ test('点标题行上的按钮不会顺手把卡片拖走', async () => {
   head.dispatch('pointermove', { clientX: 300, clientY: 200, pointerId: 2 })
   assert.notEqual(ctx.widget.style.left, baselineLeft, 'dragging from the title must move the card')
   head.dispatch('pointerup', { pointerId: 2 })
+})
+
+test('整张卡片左键都能拖（不只是标题行）', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const baselineLeft = ctx.widget.style.left
+
+  // 在 body 区域（时钟/进度条那一块）按下左键**向右下**拖。
+  // 方向很重要：垫片里 offsetLeft/Top 恒为 0，往左上拖会被「夹回屏幕内」算成 0，
+  // 那样即使代码正确断言也会失败。
+  ctx.widget.dispatch('pointerdown', { button: 0, target: ctx.widget, clientX: 500, clientY: 500, pointerId: 11 })
+  ctx.widget.dispatch('pointermove', { clientX: 700, clientY: 600, pointerId: 11 })
+  assert.notEqual(ctx.widget.style.left, baselineLeft, 'the whole card must be draggable with the left button')
+  ctx.widget.dispatch('pointerup', { pointerId: 11 })
+})
+
+test('按住右键拖动也能移动卡片', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const baselineLeft = ctx.widget.style.left
+
+  ctx.widget.dispatch('pointerdown', { button: 2, clientX: 600, clientY: 600, pointerId: 12 })
+  ctx.widget.dispatch('pointermove', { clientX: 800, clientY: 700, pointerId: 12 })
+  assert.notEqual(ctx.widget.style.left, baselineLeft, 'right-button drag must move the card')
+  ctx.widget.dispatch('pointerup', { button: 2, clientX: 800, clientY: 700, pointerId: 12 })
+
+  // 拖动之后不该再弹菜单（拖了就不是"点一下"）
+  const menu = ctx.doc.getElementById('dsh-eta-ctxmenu')
+  if (menu) assert.equal(menu.getAttribute('data-hidden'), '1', 'a right-drag must not open the menu')
+})
+
+test('右键原地轻点（不移动）才弹菜单', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const baselineLeft = ctx.widget.style.left
+
+  ctx.widget.dispatch('pointerdown', { button: 2, clientX: 600, clientY: 600, pointerId: 13 })
+  ctx.widget.dispatch('pointerup', { button: 2, clientX: 600, clientY: 600, pointerId: 13 })
+
+  assert.equal(ctx.widget.style.left, baselineLeft, 'a right-click must not move the card')
+  const menu = ctx.doc.getElementById('dsh-eta-ctxmenu')
+  assert.ok(menu, 'right-click must build the menu')
+  assert.equal(menu.getAttribute('data-hidden'), null, 'and show it')
 })
 
 test('缩到很小时留一块能点开的逃生热区', async () => {
@@ -672,12 +732,11 @@ test('隐藏挂件时热区一起消失', async () => {
   zoom.dispatch('input')
   assert.ok(ctx.doc.getElementById('dsh-eta-hotspot'))
 
-  const head = ctx.widget.children[0]
-  const hide = head.children[2]
-  hide.dispatch('click', CLICK)
-  assert.equal(ctx.widget.getAttribute('data-hidden'), '1')
+  // 挂件再也不能隐藏了：这条用例改成「缩小后热区仍在、放大后消失」的回归保护。
+  zoom.value = '100'
+  zoom.dispatch('input')
   assert.equal(ctx.doc.getElementById('dsh-eta-hotspot'), null,
-    'a hidden widget must not leave an invisible click target behind')
+    'zooming back to full size must remove the escape hotspot')
 })
 
 /* ---------- 隐藏菜单按钮 + 右键菜单 ---------- */
@@ -687,10 +746,16 @@ function menuToggleOf(panel) {
   return inputOf(panel, 'checkbox')
 }
 
-/** 右键卡片，返回随后弹出的菜单节点。 */
+/**
+ * 右键"点一下"卡片（按下后原地松开，不移动）→ 应弹出菜单。
+ *
+ * 注意：菜单现在由拖动的 pointerup 触发，而不是 contextmenu 事件 ——
+ * 因为右键同时承担了拖动。所以这里模拟的是真实的按下-松开序列。
+ */
 function openContextMenu(ctx) {
-  const event = { clientX: 300, clientY: 300, preventDefault() {}, stopPropagation() {} }
-  ctx.widget.dispatch('contextmenu', event)
+  const root = ctx.widget
+  root.dispatch('pointerdown', { button: 2, clientX: 300, clientY: 300, pointerId: 90 })
+  root.dispatch('pointerup', { button: 2, clientX: 300, clientY: 300, pointerId: 90 })
   return ctx.doc.getElementById('dsh-eta-ctxmenu')
 }
 
@@ -741,10 +806,10 @@ test('右键唤出菜单，三项操作都在', async () => {
   const labels = menu.children.map((child) => child.textContent)
   assert.ok(labels.some((l) => l.indexOf('收起') !== -1 || l.indexOf('展开') !== -1), 'has collapse toggle, got ' + labels)
   assert.ok(labels.indexOf('外观设置') !== -1, 'has settings, got ' + labels)
-  assert.ok(labels.indexOf('隐藏挂件') !== -1, 'has hide, got ' + labels)
+  assert.ok(labels.indexOf('回到右下角') !== -1, 'has reposition, got ' + labels)
 })
 
-test('按钮隐藏后，右键菜单仍能收起、开设置、隐藏', async () => {
+test('按钮隐藏后，右键菜单仍能收起、开设置、回到右下角', async () => {
   const ctx = bootClient(
     [{ ok: true, now: Date.now(), sessions: [] }],
     { storage: { 'dsh-eta-forecast:v1': JSON.stringify({ menuHidden: true }) } },
@@ -767,10 +832,11 @@ test('按钮隐藏后，右键菜单仍能收起、开设置、隐藏', async ()
   assert.equal(ctx.doc.getElementById('dsh-eta-panel').getAttribute('data-hidden'), null,
     'menu must open the settings panel')
 
-  // 隐藏
+  // 回到右下角（替代已删除的「隐藏挂件」）
   menu = openContextMenu(ctx)
-  buttonOf(menu, '隐藏挂件').dispatch('click', CLICK)
-  assert.equal(ctx.widget.getAttribute('data-hidden'), '1', 'menu must hide the widget')
+  buttonOf(menu, '回到右下角').dispatch('click', CLICK)
+  assert.ok(ctx.widget.style.left, 'menu must reposition the card')
+  assert.equal(menu.getAttribute('data-hidden'), '1')
 })
 
 test('右键菜单点空白处就收起', async () => {

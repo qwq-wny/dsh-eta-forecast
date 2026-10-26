@@ -31,8 +31,8 @@ const report = {}
 report.mounted = await widget.count() === 1
 report.clockText = (await page.locator('.dsh-eta-clock').innerText()).replace(/\n/g, ' | ')
 
-// ---- 1. 设置面板能打开 ----
-await page.locator('.dsh-eta-head .dsh-eta-btn').nth(2).click()
+// ---- 1. 设置面板能打开（标题行现在只有「收起」「齿轮」两个按钮） ----
+await page.locator('.dsh-eta-head .dsh-eta-btn').nth(1).click()
 await page.waitForSelector('#dsh-eta-panel:not([data-hidden])', { timeout: 3000 })
 report.panelVisible = await page.locator('#dsh-eta-panel').isVisible()
 report.panelSliders = await page.locator('#dsh-eta-panel input[type="range"]').count()
@@ -115,39 +115,61 @@ report.clockColorOnWallpaper = await page.locator('.dsh-eta-clock b').evaluate(
   (el) => getComputedStyle(el).color,
 )
 
-// ---- 6. 「隐藏菜单按钮」：按钮真的消失、右键菜单真的能唤出 ----
-const beforeHide = await page.locator('.dsh-eta-head .dsh-eta-btn:visible').count()
-report.titleButtonsBeforeHide = beforeHide
+// ---- 6. 「隐藏挂件」已删除；标题行只剩两个按钮 ----
+report.titleButtons = await page.locator('.dsh-eta-head .dsh-eta-btn:visible').count()
+report.noHideButton = report.titleButtons === 2 // 收起 + 齿轮
 
-await page.locator('#dsh-eta-panel input[type="checkbox"]').check()
-await page.waitForTimeout(250)
-report.menuHiddenAttr = await widget.getAttribute('data-menu-hidden')
-report.titleButtonsAfterHide = await page.locator('.dsh-eta-head .dsh-eta-btn:visible').count()
-report.buttonsActuallyGone = report.titleButtonsAfterHide === 0
-
-// 关掉面板，否则它会盖住卡片
-await page.locator('#dsh-eta-panel .dsh-eta-btn').first().click()
-await page.waitForTimeout(200)
-
-// 右键唤出菜单
+// ---- 7. 右键轻点 = 菜单 ----
 await widget.click({ button: 'right' })
 await page.waitForSelector('#dsh-eta-ctxmenu:not([data-hidden])', { timeout: 3000 })
 report.contextMenuVisible = await page.locator('#dsh-eta-ctxmenu').isVisible()
 report.contextMenuItems = await page.locator('#dsh-eta-ctxmenu .dsh-eta-ctxitem').allInnerTexts()
-await page.screenshot({ path: `${OUT}/5-menu-hidden-rightclick.png` })
+report.menuHasNoHide = !(await page.locator('#dsh-eta-ctxmenu .dsh-eta-ctxitem').allInnerTexts()).includes('隐藏挂件')
 
-// 从菜单里开设置 —— 这是按钮藏起来后唯一的入口
+// 从菜单里开设置
 await page.locator('#dsh-eta-ctxmenu .dsh-eta-ctxitem', { hasText: '外观设置' }).click()
 await page.waitForTimeout(300)
 report.menuOpensPanel = await page.locator('#dsh-eta-panel').getAttribute('data-hidden') === null
+await page.locator('#dsh-eta-panel .dsh-eta-btn').first().click()
+await page.waitForTimeout(200)
 
-// ---- 7. 恢复默认 ----
+// ---- 8. 右键按住拖动 = 移动卡片（这是本次新增的核心诉求） ----
+const posBefore = await widget.boundingBox()
+const box = posBefore
+// 在卡片中部按住右键，往左上拖 120px
+await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+await page.mouse.down({ button: 'right' })
+await page.mouse.move(box.x + box.width / 2 - 120, box.y + box.height / 2 - 120, { steps: 12 })
+await page.mouse.up({ button: 'right' })
+await page.waitForTimeout(300)
+
+const posAfter = await widget.boundingBox()
+report.rightDragMovedCard = Math.abs(posAfter.x - posBefore.x) > 60 || Math.abs(posAfter.y - posBefore.y) > 60
+report.rightDragDelta = { dx: Math.round(posAfter.x - posBefore.x), dy: Math.round(posAfter.y - posBefore.y) }
+// 拖完不该弹菜单
+report.rightDragDidNotOpenMenu = await page.locator('#dsh-eta-ctxmenu').getAttribute('data-hidden') === '1'
+
+// ---- 9. 整卡左键也能拖（不限于标题行） ----
+const posBeforeLeft = await widget.boundingBox()
+await page.mouse.move(posBeforeLeft.x + posBeforeLeft.width / 2, posBeforeLeft.y + posBeforeLeft.height - 20)
+await page.mouse.down()
+await page.mouse.move(posBeforeLeft.x + posBeforeLeft.width / 2 + 100, posBeforeLeft.y + posBeforeLeft.height - 40, { steps: 10 })
+await page.mouse.up()
+await page.waitForTimeout(300)
+const posAfterLeft = await widget.boundingBox()
+report.leftDragFromBodyMovedCard =
+  Math.abs(posAfterLeft.x - posBeforeLeft.x) > 50 || Math.abs(posAfterLeft.y - posBeforeLeft.y) > 50
+await page.screenshot({ path: `${OUT}/5-drag-and-menu.png` })
+
+// ---- 10. 恢复默认 ----
+await widget.click({ button: 'right' })
+await page.waitForSelector('#dsh-eta-ctxmenu:not([data-hidden])')
+await page.locator('#dsh-eta-ctxmenu .dsh-eta-ctxitem', { hasText: '外观设置' }).click()
+await page.waitForTimeout(300)
 await page.locator('#dsh-eta-panel .dsh-eta-action', { hasText: '恢复默认' }).click()
 await page.waitForTimeout(400)
 report.afterResetWallpaper = await widget.getAttribute('data-wallpaper')
 report.afterResetTransform = await widget.evaluate((el) => el.style.transform || '(none)')
-report.afterResetMenuHidden = await widget.getAttribute('data-menu-hidden')
-report.titleButtonsAfterReset = await page.locator('.dsh-eta-head .dsh-eta-btn:visible').count()
 await page.screenshot({ path: `${OUT}/4-after-reset.png` })
 
 report.pageErrors = errors

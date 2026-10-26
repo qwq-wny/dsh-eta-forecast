@@ -173,7 +173,6 @@
     'user-select:none;-webkit-user-select:none;transition:opacity .18s ease,transform .18s ease;',
     // 缩放靠 transform：只影响绘制，不触发重排，拖动时也不会掉帧。
     'transform-origin:top left;overflow:hidden}',
-    '#dsh-eta-root[data-hidden="1"]{display:none}',
     '#dsh-eta-root[data-dragging="1"]{transition:none}',
     // 壁纸三层都铺在内容下面；用 DOM 末尾 + z-index 而不是插到最前面，
     // 这样既有子节点的索引（标题行仍是 children[0]）保持不变。
@@ -326,18 +325,13 @@
     toggle.type = 'button'
     toggle.title = '收起 / 展开'
     toggle.textContent = '−'
-    var hide = el('button', 'dsh-eta-btn')
-    hide.type = 'button'
-    hide.title = '隐藏（右键菜单里可恢复）'
-    hide.textContent = '×'
-    // 齿轮放在最后：标题行的前三个子节点位置保持不变，旧代码/旧测试不用改。
+    // 齿轮放在最后：标题行的前两个子节点位置保持不变，旧代码/旧测试不用改。
     var gear = el('button', 'dsh-eta-btn')
     gear.type = 'button'
     gear.title = '外观设置'
     gear.textContent = '⚙'
     head.appendChild(title)
     head.appendChild(toggle)
-    head.appendChild(hide)
     head.appendChild(gear)
 
     var body = el('div', 'dsh-eta-body')
@@ -383,7 +377,7 @@
     document.body.appendChild(root)
 
     nodes = {
-      root: root, title: title, toggle: toggle, hide: hide, gear: gear, body: body,
+      root: root, title: title, toggle: toggle, gear: gear, body: body,
       clockBig: clockBig, clockUnit: clockUnit, sub: sub, fill: fill,
       footLeft: footLeft, badge: badge, task: task, pause: pause,
       bg: bg, dim: dim, wash: wash,
@@ -410,18 +404,12 @@
       toggleCollapsed()
     })
 
-    hide.addEventListener('click', function (event) {
-      event.stopPropagation()
-      hideWidget()
-    })
-
     gear.addEventListener('click', function (event) {
       event.stopPropagation()
       togglePanel()
     })
 
-    installDrag(head)
-    installRestore()
+    installDrag(root)
     installDoubleClickSettings(title)
     installContextMenu()
     applyAppearance()
@@ -857,10 +845,7 @@
    */
   function updateHotspot() {
     if (!nodes) return
-    // 挂件被隐藏时热区也得消失：它只是「点不到齿轮」的补偿，
-    // 不该在用户点了 × 之后还留一块隐形的东西在页面上。
-    var hidden = nodes.root.getAttribute('data-hidden') === '1'
-    var needHotspot = !hidden && appearance.zoom < 60
+    var needHotspot = appearance.zoom < 60
     if (!needHotspot) {
       if (nodes.hotspot && nodes.hotspot.parentNode) {
         nodes.hotspot.parentNode.removeChild(nodes.hotspot)
@@ -906,10 +891,13 @@
     menu.id = CONTEXT_MENU_ID
     menu.setAttribute('data-hidden', '1')
 
+    // 注意：这里没有「隐藏挂件」。那个功能已经按用户要求删掉了 ——
+    // 隐藏后只能靠双击热区找回，既难发现又容易把自己锁在外面；
+    // 现在想让它不碍事，收起（只剩标题行）或者直接拖到角落即可。
     var items = [
       { label: '收起 / 展开', run: function () { toggleCollapsed() } },
       { label: '外观设置', run: function () { showPanel() } },
-      { label: '隐藏挂件', run: function () { hideWidget() } },
+      { label: '回到右下角', run: function () { resetPosition() } },
     ]
     contexts = items.map(function (item) {
       var button = el('button', 'dsh-eta-ctxitem', item.label)
@@ -950,12 +938,16 @@
     contextMenu.setAttribute('data-hidden', '1')
   }
 
-  /** 右键：无论在不在「隐藏菜单按钮」模式下都可用（这是菜单的唯一稳定入口）。 */
+  /**
+   * 右键菜单的「右键」入口。
+   *
+   * 注意：真正的触发在拖动的 pointerup 里（右键原地松开 = 菜单），这里只负责
+   * 吞掉浏览器自带的上下文菜单，避免「拖动时弹出系统菜单」。
+   */
   function installContextMenu() {
     nodes.root.addEventListener('contextmenu', function (event) {
       event.preventDefault()
       event.stopPropagation()
-      showContextMenu(event.clientX, event.clientY)
     })
     // 点别处 / 按 Esc 收起来。捕获阶段监听，免得被其它插件的 stopPropagation 吃掉。
     document.addEventListener('pointerdown', function (event) {
@@ -979,15 +971,23 @@
     writeSettings({ collapsed: collapsed })
   }
 
-  /** 隐藏挂件，按钮与右键菜单共用同一份逻辑。 */
-  function hideWidget() {
+  /** 回到右下角默认位置（位置丢了或拖到看不见的地方时的兜底）。 */
+  function resetPosition() {
     if (!nodes) return
-    nodes.root.setAttribute('data-hidden', '1')
-    hidePanel()
-    hideContextMenu()
-    updateHotspot()
-    writeSettings({ hidden: true })
-    try { window.dispatchEvent(new CustomEvent('dsh-eta-hidden')) } catch (err) { /* 老浏览器忽略 */ }
+    nodes.root.style.left = ''
+    nodes.root.style.top = ''
+    nodes.root.style.right = ''
+    nodes.root.style.bottom = ''
+    writeSettings({ left: null, top: null })
+    requestAnimationFrame(function () {
+      if (!nodes) return
+      var rect = nodes.root.getBoundingClientRect()
+      nodes.root.style.left = Math.max(0, window.innerWidth - rect.width - 16) + 'px'
+      nodes.root.style.top = Math.max(0, window.innerHeight - rect.height - 16) + 'px'
+      nodes.root.style.right = 'auto'
+      nodes.root.style.bottom = 'auto'
+      applyZoom(appearance.zoom, 'bottom-right')
+    })
   }
 
   /** 应用「隐藏菜单按钮」：整组按钮显示/隐藏。 */
@@ -1016,40 +1016,74 @@
 
   /* ---------- 拖动（位置记住） ---------- */
 
+  /* ---------- 拖动（位置记住） ---------- */
+
+  /**
+   * 整张卡片都能拖：**左键按住**拖，或者**右键按住**拖。
+   *
+   * 右键在这里身兼两职，判定规则是「按下后有没有真的移动」：
+   *   - 右键按下 → 移动超过阈值 → 拖动卡片；
+   *   - 右键按下 → 原地松开   → 弹菜单。
+   * 这样「整卡右键都能拖」和「右键唤出菜单」可以共存。如果直接让右键等同左键，
+   * 按钮藏起来后就再也没有菜单入口了（那正是上一版刚修过的坑）。
+   *
+   * 左键仍然保留「按钮上不拖」的例外：点齿轮/收起不该顺手把卡片拖走。
+   * 右键没有这个例外 —— 用户明确要求「所有地方都可以右键拖动」。
+   */
   function installDrag(handle) {
     var startX = 0
     var startY = 0
     var originLeft = 0
     var originTop = 0
     var moved = false
+    /** 本次按下是右键（松开时若没移动就弹菜单）。 */
+    var fromRight = false
+    var active = false
+    var DRAG_THRESHOLD = 3
+
+    handle.addEventListener('contextmenu', function (event) {
+      // 拖动过程中不弹系统菜单；菜单由下面的 pointerup 分支负责。
+      event.preventDefault()
+      event.stopPropagation()
+    })
 
     handle.addEventListener('pointerdown', function (event) {
-      if (event.button !== 0) return
-      // 点在按钮上时不要开始拖动，否则点齿轮会顺手把卡片拖走。
-      var target = event.target
-      if (target && target.tagName === 'BUTTON') return
+      var isLeft = event.button === 0
+      var isRight = event.button === 2
+      if (!isLeft && !isRight) return
+      // 左键点在按钮上时不开始拖动，否则点齿轮会顺手把卡片拖走。
+      if (isLeft) {
+        var target = event.target
+        if (target && target.tagName === 'BUTTON') return
+      }
       var rect = nodes.root.getBoundingClientRect()
       startX = event.clientX
       startY = event.clientY
       originLeft = rect.left
       originTop = rect.top
       moved = false
-      dragging = true
+      fromRight = isRight
+      active = true
+      dragging = false
       nodes.root.setAttribute('data-dragging', '1')
       // 拖动期间改为 left/top 定位，否则 right/bottom 会让坐标算反。
       nodes.root.style.left = originLeft + 'px'
       nodes.root.style.top = originTop + 'px'
       nodes.root.style.right = 'auto'
       nodes.root.style.bottom = 'auto'
+      if (isRight) hideContextMenu()
       try { handle.setPointerCapture(event.pointerId) } catch (err) { /* 忽略 */ }
     })
 
     handle.addEventListener('pointermove', function (event) {
-      if (!dragging) return
+      if (!active) return
       var dx = event.clientX - startX
       var dy = event.clientY - startY
-      if (!moved && Math.abs(dx) + Math.abs(dy) < 3) return
-      moved = true
+      if (!moved) {
+        if (Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return
+        moved = true
+        dragging = true
+      }
       // 用可视尺寸（getBoundingClientRect）而不是 offsetWidth：
       // 缩放后布局宽度仍是 236，只有视觉盒子才是真大小。
       var rect = nodes.root.getBoundingClientRect()
@@ -1063,18 +1097,36 @@
       updateHotspot()
     })
 
-    function finish(event) {
-      if (!dragging) return
+    function finish(event, shouldOfferMenu) {
+      if (!active) return
+      var wasRight = fromRight
+      var wasMoved = moved
+      active = false
       dragging = false
+      fromRight = false
       nodes.root.removeAttribute('data-dragging')
       try { handle.releasePointerCapture(event.pointerId) } catch (err) { /* 忽略 */ }
-      if (!moved) return
-      writeSettings({ left: nodes.root.offsetLeft, top: nodes.root.offsetTop })
-      if (panel && panel.getAttribute('data-hidden') !== '1') positionPanel()
+      if (wasMoved) {
+        writeSettings({ left: nodes.root.offsetLeft, top: nodes.root.offsetTop })
+        if (panel && panel.getAttribute('data-hidden') !== '1') positionPanel()
+        return
+      }
+      // 右键原地松开 = 唤出菜单（这是按钮藏起来后唯一的入口）。
+      // 判据是「按的是右键」+「没移动」，与事件类型无关 —— 不要依赖 event.type。
+      if (wasRight && shouldOfferMenu) {
+        showContextMenu(event.clientX, event.clientY)
+      }
     }
 
-    handle.addEventListener('pointerup', finish)
-    handle.addEventListener('pointercancel', finish)
+    handle.addEventListener('pointerup', function (event) {
+      finish(event, true)
+    })
+    handle.addEventListener('pointercancel', function (event) {
+      // 取消不当成「点击」：不弹菜单。
+      finish(event, false)
+    })
+    // 右键的 pointerup 之后浏览器还会补一个 contextmenu，交给上面的 contextmenu
+    // 监听统一吞掉（它已 preventDefault），所以这里不需要额外处理。
 
     // 记住的位置在挂载时恢复；先把默认的 right/bottom 折算成 left/top，
     // 之后缩放、拖动、夹回屏幕都在同一套坐标系里算。
@@ -1097,7 +1149,7 @@
     })
 
     window.addEventListener('resize', function () {
-      if (!nodes || nodes.root.getAttribute('data-hidden') === '1') return
+      if (!nodes) return
       if (!nodes.root.style.left) return
       var rect = nodes.root.getBoundingClientRect()
       var width = rect.width || nodes.root.offsetWidth
@@ -1111,27 +1163,6 @@
     })
   }
 
-  /* ---------- 隐藏后的恢复入口 ---------- */
-
-  function installRestore() {
-    // 隐藏之后唯一能回来的路：双击页面右下角一小块热区。
-    // 不往页面上加常驻按钮 —— 用户点 × 的意图就是「别碍事」，再放个恢复按钮等于没关。
-    if (window.__dshEtaRestoreBound) return
-    window.__dshEtaRestoreBound = true
-    document.addEventListener('dblclick', function (event) {
-      if (!nodes) return
-      if (nodes.root.getAttribute('data-hidden') !== '1') return
-      var rect = nodes.root.getBoundingClientRect()
-      var hotspot = 48
-      var nearRight = event.clientX >= window.innerWidth - hotspot
-      var nearBottom = event.clientY >= window.innerHeight - hotspot
-      var nearSaved = Math.abs(event.clientX - rect.left) < 200 && Math.abs(event.clientY - rect.top) < 200
-      if (!nearRight && !nearBottom && !nearSaved) return
-      nodes.root.removeAttribute('data-hidden')
-      writeSettings({ hidden: false })
-      updateHotspot()
-    }, true)
-  }
 
   /* ---------- 渲染 ---------- */
 
