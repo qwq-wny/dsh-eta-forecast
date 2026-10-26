@@ -252,6 +252,9 @@
     'color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.95));min-height:14px}',
     '.dsh-eta-hint[data-tone="warn"]{color:#b46214}',
     '.dsh-eta-hint[data-tone="ok"]{color:#07974b}',
+
+    /* 小尺寸逃生门：透明、不挡内容，只是给「双击开设置」一个够大的落点。 */
+    '.dsh-eta-hotspot{position:fixed;z-index:9997;background:transparent;cursor:pointer}',
   ].join('')
 
   function ensureStyle() {
@@ -384,6 +387,7 @@
       event.stopPropagation()
       nodes.root.setAttribute('data-hidden', '1')
       hidePanel()
+      updateHotspot()
       writeSettings({ hidden: true })
       try { window.dispatchEvent(new CustomEvent('dsh-eta-hidden')) } catch (err) { /* 老浏览器忽略 */ }
     })
@@ -430,6 +434,7 @@
       }
     }
     if (panel && panel.getAttribute('data-hidden') !== '1') positionPanel()
+    updateHotspot()
   }
 
   function applyAppearance() {
@@ -787,6 +792,48 @@
     img.src = raw
   }
 
+  /* ---------- 小尺寸下的逃生门 ---------- */
+
+  /**
+   * 缩到 25% 时卡片只有 59px 宽，齿轮按钮的命中区约 4.5px —— 点不到。
+   * 用户会把自己锁在一个点不开设置的小卡片里，唯一的出路是手改 localStorage。
+   * 所以：缩放小于 60% 时，在卡片旁边贴一块 44px 的透明热区，双击打开设置。
+   * 它是 fixed 定位、不参与缩放，所以 25% 时依然好点。
+   */
+  function updateHotspot() {
+    if (!nodes) return
+    // 挂件被隐藏时热区也得消失：它只是「点不到齿轮」的补偿，
+    // 不该在用户点了 × 之后还留一块隐形的东西在页面上。
+    var hidden = nodes.root.getAttribute('data-hidden') === '1'
+    var needHotspot = !hidden && appearance.zoom < 60
+    if (!needHotspot) {
+      if (nodes.hotspot && nodes.hotspot.parentNode) {
+        nodes.hotspot.parentNode.removeChild(nodes.hotspot)
+      }
+      nodes.hotspot = null
+      return
+    }
+    if (!nodes.hotspot) {
+      var spot = el('div', 'dsh-eta-hotspot')
+      // 单例元素给个 id，和 root / panel 一致：调试和测试都能直接定位。
+      spot.id = 'dsh-eta-hotspot'
+      spot.title = '双击打开外观设置'
+      spot.addEventListener('dblclick', function (event) {
+        event.stopPropagation()
+        showPanel()
+      })
+      document.body.appendChild(spot)
+      nodes.hotspot = spot
+    }
+    var rect = nodes.root.getBoundingClientRect()
+    var size = 44
+    // 贴在卡片右下角外侧：不盖住卡片本体，也不会被缩放影响大小。
+    nodes.hotspot.style.width = size + 'px'
+    nodes.hotspot.style.height = size + 'px'
+    nodes.hotspot.style.left = Math.round(rect.left + rect.width - size / 2) + 'px'
+    nodes.hotspot.style.top = Math.round(rect.top + rect.height - size / 2) + 'px'
+  }
+
   /* ---------- 双击标题行也能开设置 ---------- */
 
   function installDoubleClickSettings(handle) {
@@ -849,6 +896,7 @@
       nodes.root.style.left = left + 'px'
       nodes.root.style.top = top + 'px'
       if (panel && panel.getAttribute('data-hidden') !== '1') positionPanel()
+      updateHotspot()
     })
 
     function finish(event) {
@@ -895,6 +943,7 @@
       nodes.root.style.left = Math.max(0, left) + 'px'
       nodes.root.style.top = Math.max(0, top) + 'px'
       if (panel && panel.getAttribute('data-hidden') !== '1') positionPanel()
+      updateHotspot()
     })
   }
 
@@ -916,6 +965,7 @@
       if (!nearRight && !nearBottom && !nearSaved) return
       nodes.root.removeAttribute('data-hidden')
       writeSettings({ hidden: false })
+      updateHotspot()
     }, true)
   }
 
@@ -998,8 +1048,9 @@
       nodes.pause.textContent = ''
     }
 
-    // 卡片高度会随文案变化，面板贴着它走。
+    // 卡片高度会随文案变化，面板和小尺寸热区都得跟着它走。
     if (panel && panel.getAttribute('data-hidden') !== '1') positionPanel()
+    updateHotspot()
   }
 
   /* ---------- 轮询 ---------- */

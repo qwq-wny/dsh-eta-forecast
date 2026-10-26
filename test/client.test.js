@@ -57,6 +57,13 @@ class FakeNode {
     return child
   }
 
+  removeChild(child) {
+    const at = this.children.indexOf(child)
+    if (at !== -1) this.children.splice(at, 1)
+    child.parentNode = null
+    return child
+  }
+
   setAttribute(name, value) { this.attributes[name] = String(value) }
   getAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null }
   removeAttribute(name) { delete this.attributes[name] }
@@ -611,4 +618,53 @@ test('点标题行上的按钮不会顺手把卡片拖走', async () => {
   head.dispatch('pointermove', { clientX: 300, clientY: 200, pointerId: 2 })
   assert.notEqual(ctx.widget.style.left, baselineLeft, 'dragging from the title must move the card')
   head.dispatch('pointerup', { pointerId: 2 })
+})
+
+test('缩到很小时留一块能点开的逃生热区', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const panel = await openPanel(ctx)
+  const zoom = inputOf(panel, 'range')
+
+  // 60% 及以上：齿轮还点得到，不需要额外热区
+  zoom.value = '100'
+  zoom.dispatch('input')
+  assert.equal(ctx.doc.getElementById('dsh-eta-hotspot'), null, 'no hotspot at full size')
+
+  // 25%：齿轮只有约 4.5px，必须有逃生门
+  zoom.value = '25'
+  zoom.dispatch('input')
+  const spot = ctx.doc.getElementById('dsh-eta-hotspot')
+  assert.ok(spot, 'hotspot must appear at small zoom')
+  assert.equal(spot.style.width, '44px', 'hotspot must stay a comfortable size regardless of zoom')
+
+  // 双击热区能把面板叫回来（哪怕面板已经被关掉）
+  const close = ctx.doc.getElementById('dsh-eta-panel').children[0].children[1]
+  close.dispatch('click', CLICK)
+  assert.equal(ctx.doc.getElementById('dsh-eta-panel').getAttribute('data-hidden'), '1')
+  spot.dispatch('dblclick', CLICK)
+  assert.equal(ctx.doc.getElementById('dsh-eta-panel').getAttribute('data-hidden'), null,
+    'double-clicking the hotspot must reopen the settings panel')
+
+  // 放大回去，热区要收掉，不能留一块隐形的点击区在页面上
+  zoom.value = '100'
+  zoom.dispatch('input')
+  assert.equal(ctx.doc.getElementById('dsh-eta-hotspot'), null, 'hotspot must be removed when zooming back up')
+})
+
+test('隐藏挂件时热区一起消失', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const panel = await openPanel(ctx)
+  const zoom = inputOf(panel, 'range')
+  zoom.value = '25'
+  zoom.dispatch('input')
+  assert.ok(ctx.doc.getElementById('dsh-eta-hotspot'))
+
+  const head = ctx.widget.children[0]
+  const hide = head.children[2]
+  hide.dispatch('click', CLICK)
+  assert.equal(ctx.widget.getAttribute('data-hidden'), '1')
+  assert.equal(ctx.doc.getElementById('dsh-eta-hotspot'), null,
+    'a hidden widget must not leave an invisible click target behind')
 })

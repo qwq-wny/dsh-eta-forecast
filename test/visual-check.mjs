@@ -57,6 +57,22 @@ report.zoom25TextReadable = await page.locator('.dsh-eta-clock b').evaluate((el)
   // 字号乘上实际缩放比例后，至少要有 5px 才可能读
   return parseFloat(s.fontSize) * (box.width / el.offsetWidth) >= 5
 })
+
+// 25% 时齿轮只有约 4.5px，必须有一块够大的逃生热区，而且真的能点开设置。
+report.hotspotExists = await page.locator('#dsh-eta-hotspot').count() === 1
+if (report.hotspotExists) {
+  const spotBox = await page.locator('#dsh-eta-hotspot').boundingBox()
+  report.hotspotSize = spotBox ? { w: Math.round(spotBox.width), h: Math.round(spotBox.height) } : null
+  report.hotspotBigEnough = spotBox ? spotBox.width >= 40 && spotBox.height >= 40 : false
+
+  // 先把面板关掉，再靠双击热区把它叫回来 —— 这才是用户真实的操作路径。
+  await page.locator('#dsh-eta-panel .dsh-eta-btn').first().click()
+  await page.waitForTimeout(150)
+  report.panelClosedBeforeHotspot = await page.locator('#dsh-eta-panel').getAttribute('data-hidden')
+  await page.locator('#dsh-eta-hotspot').dblclick()
+  await page.waitForTimeout(250)
+  report.hotspotReopensPanel = await page.locator('#dsh-eta-panel').getAttribute('data-hidden') === null
+}
 await page.screenshot({ path: `${OUT}/2-zoom-25.png` })
 
 // ---- 3. 壁纸：用一个内联 SVG 当图源，避免依赖网络 ----
