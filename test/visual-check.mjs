@@ -29,6 +29,33 @@ const widget = page.locator('#dsh-eta-root')
 const report = {}
 
 report.mounted = await widget.count() === 1
+
+// ---- 0. 会话切换（左上角胶囊）：单会话时不该出现 ----
+report.switcherHiddenForSingleSession =
+  (await page.locator('.dsh-eta-switcher').getAttribute('data-visible')) === '0'
+
+// 切到多会话预览
+await page.locator('.bar button', { hasText: '多会话' }).click()
+await page.waitForTimeout(2400) // 等下一轮轮询把多会话喂进来
+
+const chips = page.locator('.dsh-eta-chip')
+report.chipCount = await chips.count()
+report.switcherVisibleForMulti = (await page.locator('.dsh-eta-switcher').getAttribute('data-visible')) === '1'
+report.firstChipActive = (await chips.first().getAttribute('data-active')) === '1'
+report.chipLabels = await chips.allInnerTexts()
+
+if (report.chipCount >= 2) {
+  // 点第二个胶囊，卡片内容应该立刻换过去
+  const titleBefore = await page.locator('.dsh-eta-title').innerText()
+  await chips.nth(1).click()
+  await page.waitForTimeout(300) // 刻意短于一个轮询周期（2s），证明是立刻生效而非等轮询
+  const titleAfter = await page.locator('.dsh-eta-title').innerText()
+  report.chipSwitchChangedTitle = titleBefore !== titleAfter
+  report.chipSwitchTitle = { before: titleBefore, after: titleAfter }
+  report.secondChipActive = (await chips.nth(1).getAttribute('data-active')) === '1'
+  await page.screenshot({ path: `${OUT}/7-session-switch.png` })
+}
+
 report.clockText = (await page.locator('.dsh-eta-clock').innerText()).replace(/\n/g, ' | ')
 
 // ---- 1. 设置面板能打开（标题行现在只有「收起」「齿轮」两个按钮） ----

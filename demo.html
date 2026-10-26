@@ -46,6 +46,7 @@
     <b>设置：</b>点标题行的 <code>⚙</code>、双击标题文字、或<b>右键原地轻点</b>，都直接打开设置面板。<br>
     <b>拖动：</b>整张卡片都能拖 —— <b>左键按住</b>或<b>右键按住</b>都可以。<br>
     <b>区别：</b>右键按下后<b>移动</b>就是拖动，<b>原地松开</b>才打开设置。<br>
+    <b>会话切换：</b>点第 ⑤ 个按钮切到多会话，卡片左上方会多出一排胶囊，点它换会话。<br>
     公式全部在宿主侧 <code>lib/forecast.js</code>，这一页只是复用了渲染代码。
   </p>
 </div>
@@ -105,6 +106,28 @@
   }
 
   var current = 'progress'
+  /** 是否显示「多会话」模式（用来预览左上角的会话切换胶囊）。 */
+  var multi = false
+
+  // 多会话预览用的两条额外会话
+  var EXTRA = [
+    {
+      id: 'demo-b', title: '给桌面浮窗加点击穿透', phase: 'running',
+      elapsedMs: 3 * MIN, remainMs: 9 * MIN, etaAt: now + 9 * MIN,
+      confidence: 'low', source: 'steps',
+      progress: 0.2, total: 0, completed: 0, inProgress: 0, pending: 0,
+      currentTask: '调 setIgnoreMouseEvents', steps: 37,
+      paused: false, pausedMs: 0, updatedAt: now,
+    },
+    {
+      id: 'demo-c', title: '上一轮：整理 README', phase: 'done', endReason: 'completed',
+      elapsedMs: 4 * MIN, remainMs: null, etaAt: null,
+      confidence: 'none', source: 'none',
+      progress: 1, total: 3, completed: 3, inProgress: 0, pending: 0,
+      currentTask: '', steps: 12,
+      paused: false, pausedMs: 0, updatedAt: now - 60 * 1000,
+    },
+  ]
 
   // 每次轮询都按「当前选中的状态」回答；ETA 时刻跟着真实时钟走，看起来才像活的。
   window.fetch = function () {
@@ -119,9 +142,10 @@
       }
     }
     live.updatedAt = Date.now()
+    var sessions = multi ? [live].concat(EXTRA) : [live]
     return Promise.resolve({
       ok: true, status: 200,
-      json: function () { return Promise.resolve({ ok: true, now: Date.now(), sessions: [live] }) },
+      json: function () { return Promise.resolve({ ok: true, now: Date.now(), sessions: sessions }) },
     })
   }
 
@@ -138,6 +162,17 @@
     })
     bar.appendChild(button)
   })
+
+  // 多会话开关：用来预览会话切换胶囊
+  var multiBtn = document.createElement('button')
+  multiBtn.type = 'button'
+  multiBtn.textContent = '⑤ 多会话切换'
+  multiBtn.setAttribute('data-on', '0')
+  multiBtn.addEventListener('click', function () {
+    multi = !multi
+    multiBtn.setAttribute('data-on', multi ? '1' : '0')
+  })
+  bar.appendChild(multiBtn)
 })()
 </script>
 <script src="./assets/eta-client.js"></script>

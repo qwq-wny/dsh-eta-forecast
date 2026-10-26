@@ -232,6 +232,25 @@
     '.dsh-eta-head,.dsh-eta-body{position:relative;z-index:1}',
     '.dsh-eta-head{display:flex;align-items:center;gap:8px;cursor:grab}',
     '#dsh-eta-root[data-dragging="1"] .dsh-eta-head{cursor:grabbing}',
+
+    /* 会话切换行：横向可滚动的胶囊列表。只有一条会话时整行收起（data-visible=0）。 */
+    '.dsh-eta-switcher{position:relative;z-index:1;display:none;align-items:center;gap:4px;',
+    'margin:-2px 0 7px;padding-bottom:6px;overflow-x:auto;overflow-y:hidden;',
+    'scrollbar-width:none;-ms-overflow-style:none}',
+    '.dsh-eta-switcher::-webkit-scrollbar{display:none}',
+    '.dsh-eta-switcher[data-visible="1"]{display:flex}',
+    '.dsh-eta-chip{flex:none;max-width:112px;padding:2px 7px;border:0;border-radius:99px;',
+    'font:inherit;font-size:10.5px;line-height:1.5;cursor:pointer;white-space:nowrap;',
+    'overflow:hidden;text-overflow:ellipsis;',
+    'background:rgba(127,127,127,.14);color:var(--dsw-alias-label-tertiary,rgba(90,100,115,.95))}',
+    '.dsh-eta-chip:hover{background:rgba(127,127,127,.24)}',
+    '.dsh-eta-chip[data-active="1"]{',
+    'background:var(--dsw-alias-brand-primary,#4f9dd9);color:#fff;font-weight:600}',
+    // 运行中的会话加一个呼吸点，扫一眼就知道哪条在跑。
+    '.dsh-eta-chip[data-running="1"]::before{content:"";display:inline-block;width:5px;height:5px;',
+    'margin-right:4px;border-radius:50%;background:#40c07a;vertical-align:middle}',
+    '.dsh-eta-chip[data-active="1"][data-running="1"]::before{background:#fff}',
+
     '.dsh-eta-title{flex:1;min-width:0;font-weight:600;font-size:12px;',
     'letter-spacing:.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;',
     'color:var(--dsw-alias-label-secondary,rgba(60,70,90,.95))}',
@@ -339,6 +358,15 @@
   /** 主题底色（在壁纸接管之前抓一次），用来给卡片算半透明底色。 */
   var themeBg = ''
   var wallpaper = ''
+  /**
+   * 用户手动选中的会话 id。
+   *
+   * 空字符串 = 跟随「当前会话」（宿主排序里的第一条：优先运行中的）。
+   * 手动选过就钉住，直到那个会话消失或用户点回「跟随」。
+   * 为什么不存 localStorage：会话是临时的，重启宿主后 id 全换，
+   * 记住一个死 id 只会让挂件永远显示「会话不存在」。
+   */
+  var pinnedSessionId = ''
 
   function el(tag, className, text) {
     var node = document.createElement(tag)
@@ -351,6 +379,11 @@
     ensureStyle()
     var root = el('div')
     root.id = ROOT_ID
+
+    // 会话切换行：只有一条会话时不显示（没得切），两条以上才出现。
+    // 放在标题行**上方** —— 它切的是「整张卡片在看哪条会话」，比标题更靠前一层。
+    var switcher = el('div', 'dsh-eta-switcher')
+    switcher.setAttribute('data-visible', '0')
 
     var head = el('div', 'dsh-eta-head')
     var title = el('div', 'dsh-eta-title', '预计完成')
@@ -402,6 +435,7 @@
     var dim = el('div', 'dsh-eta-dim')
     var wash = el('div', 'dsh-eta-wash')
 
+    root.appendChild(switcher)
     root.appendChild(head)
     root.appendChild(body)
     root.appendChild(bg)
@@ -413,7 +447,7 @@
       root: root, title: title, toggle: toggle, gear: gear, body: body,
       clockBig: clockBig, clockUnit: clockUnit, sub: sub, fill: fill,
       footLeft: footLeft, badge: badge, task: task, pause: pause,
-      bg: bg, dim: dim, wash: wash,
+      bg: bg, dim: dim, wash: wash, switcher: switcher,
     }
 
     // 主题底色要在被壁纸覆盖之前读出来。
@@ -1308,9 +1342,108 @@
 
   /* ---------- 渲染 ---------- */
 
+  /**
+   * 从快照里挑出「要看的那条会话」。
+   *
+   * 优先用户钉住的那条；钉住的会话消失了（被清理 / 宿主重启换了 id）就自动
+   * 回到「跟随当前」，不要把挂件卡在一个不存在的 id 上。
+   */
   function pickSession(payload) {
-    if (!payload || !Array.isArray(payload.sessions) || payload.sessions.length === 0) return null
-    return payload.sessions[0]
+    if (!payload || !Array.isArray(payload.sessions) || payload.sessions.length === 0) {
+      if (pinnedSessionId) pinnedSessionId = ''
+      return null
+    }
+    var list = payload.sessions
+    if (pinnedSessionId) {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i] && list[i].id === pinnedSessionId) return list[i]
+      }
+      // 钉住的那条没了 → 解除钉住，回落默认
+      pinnedSessionId = ''
+    }
+    return list[0]
+  }
+
+  /** 一条会话在胶囊上显示的名字（标题可能为空）。 */
+  function sessionLabelOf(session) {
+    var title = session && session.title ? String(session.title).trim() : ''
+    if (title) return title
+    // 没标题时用 id 尾巴兜底：至少能区分「这是哪一条」，比统一显示「未命名」强。
+    var id = session && session.id ? String(session.id) : ''
+    var tail = id.replace(/^session-/, '').slice(0, 4)
+    return tail ? '会话 ' + tail : '未命名'
+  }
+
+  /**
+   * 画会话切换行。
+   *
+   * 只有一条会话时整行收起 —— 没得切的东西不该占地方。
+   * 两条以上才出现，点击即切换看哪条。
+   */
+  function renderSwitcher(list, activeId) {
+    if (!nodes || !nodes.switcher) return
+    var sessions = Array.isArray(list) ? list : []
+    if (sessions.length <= 1) {
+      nodes.switcher.setAttribute('data-visible', '0')
+      nodes.switcher.textContent = ''
+      return
+    }
+    nodes.switcher.setAttribute('data-visible', '1')
+    nodes.switcher.textContent = ''
+
+    for (var i = 0; i < sessions.length; i++) {
+      (function (session) {
+        if (!session) return
+        var chip = el('button', 'dsh-eta-chip', sessionLabelOf(session))
+        chip.type = 'button'
+        var isActive = session.id === activeId
+        chip.setAttribute('data-active', isActive ? '1' : '0')
+        chip.setAttribute('data-running', session.phase === 'running' ? '1' : '0')
+        chip.title = sessionLabelOf(session)
+          + (session.phase === 'running' ? '（进行中）' : '（已结束）')
+          + '\n点击切换到这个会话'
+        // 点击切换：stopPropagation 免得被拖动逻辑当成拖动起点。
+        chip.addEventListener('click', function (event) {
+          event.stopPropagation()
+          pinnedSessionId = session.id
+          // 立刻用现有快照重画，不等下一次轮询（最多 2 秒的空窗会让人以为点错了）。
+          if (lastPayload) applyPayload(lastPayload)
+        })
+        chip.addEventListener('pointerdown', function (event) {
+          // 胶囊上按下不拖动卡片：拖动整卡的逻辑挂在 root 上，
+          // 这里明确停掉，免得"点胶囊想看别的会话"变成"把卡片拖走"。
+          event.stopPropagation()
+        })
+        nodes.switcher.appendChild(chip)
+      })(sessions[i])
+    }
+
+    // 选中的那个滚到可见区（会话多时会有横向滚动）。
+    try {
+      var chips = nodes.switcher.querySelectorAll
+        ? nodes.switcher.querySelectorAll('.dsh-eta-chip[data-active="1"]')
+        : null
+      var active = chips && chips.length > 0 ? chips[0] : null
+      if (active && typeof active.scrollIntoView === 'function') {
+        active.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      }
+    } catch (err) { /* 老浏览器忽略 */ }
+  }
+
+  /** 最近一次快照原始载荷（切换会话时用它就地重画，不必等下一轮轮询）。 */
+  var lastPayload = null
+
+  /**
+   * 用一份快照载荷重画整个挂件。
+   *
+   * 拆出来是因为「切换会话」也要立刻重画 —— 不拆就得等最多 2 秒，
+   * 点了胶囊却没反应会让人以为点错了。
+   */
+  function applyPayload(payload) {
+    applyDisplayMode(payload)
+    var chosen = pickSession(payload)
+    renderSwitcher(payload && payload.sessions, chosen ? chosen.id : '')
+    render(chosen)
   }
 
   /**
@@ -1439,14 +1572,17 @@
       })
       .then(function (payload) {
         failureCount = 0
-        // 先按显示位置决定要不要露脸，再渲染内容。
-        applyDisplayMode(payload)
-        render(pickSession(payload))
+        // 记下原始载荷：切换会话时用它就地重画，不必等下一轮轮询。
+        lastPayload = payload
+        applyPayload(payload)
       })
       .catch(function () {
         failureCount++
         // 连续失败才改文案：一次网络抖动不该把 ETA 抹掉。
-        if (failureCount >= 3 && current) render(null)
+        if (failureCount >= 3 && current) {
+          render(null)
+          renderSwitcher(null, '')
+        }
       })
       .then(function () {
         if (timeout !== null) clearTimeout(timeout)

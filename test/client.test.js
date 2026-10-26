@@ -367,8 +367,7 @@ test('已完成快照显示「已完成」与上一轮用时', async () => {
 test('收起按钮切换状态并写进 localStorage', async () => {
   const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
   await new Promise((resolve) => setImmediate(resolve))
-  const head = ctx.widget.children[0]
-  const toggle = head.children[1]
+  const toggle = headOf(ctx).children[1]
   assert.equal(ctx.widget.classList.contains('dsh-eta-root-collapsed'), false)
   toggle.dispatch('click', { stopPropagation() {} })
   assert.equal(ctx.widget.classList.contains('dsh-eta-root-collapsed'), true)
@@ -444,14 +443,27 @@ function buttonOf(node, label) {
 
 const CLICK = { stopPropagation() {} }
 
+/**
+ * 取标题行。
+ *
+ * 按 class 找而不是下标 —— 卡片在标题行**上方**多了一行会话切换器
+ * （`.dsh-eta-switcher`），`children[0]` 已经不是标题了。
+ * 按语义找，以后再加行也不会把这一串测试全打翻。
+ */
+function headOf(ctx) {
+  const head = nodeOf(ctx.widget, 'dsh-eta-head')
+  assert.ok(head, 'title row must exist')
+  return head
+}
+
 /** 标题行里的按钮：[展开/收起, 齿轮]（「隐藏挂件」已按用户要求删除）。 */
 function headButtons(ctx) {
-  return ctx.widget.children[0].children.filter((child) => child.tagName === 'BUTTON')
+  return headOf(ctx).children.filter((child) => child.tagName === 'BUTTON')
 }
 
 /** 打开设置面板，返回面板节点。 */
 async function openPanel(ctx) {
-  const gear = ctx.widget.children[0].children[2]
+  const gear = headButtons(ctx)[1]
   assert.ok(gear, 'gear button must exist in the title row')
   gear.dispatch('click', CLICK)
   const panel = ctx.doc.getElementById('dsh-eta-panel')
@@ -470,7 +482,7 @@ test('齿轮按钮打开设置面板，再点一次收起', async () => {
   assert.equal(panel.id, 'dsh-eta-panel')
   assert.equal(panel.parentNode, ctx.doc.body)
 
-  ctx.widget.children[0].children[2].dispatch('click', CLICK)
+  headButtons(ctx)[1].dispatch('click', CLICK)
   assert.equal(panel.getAttribute('data-hidden'), '1')
 })
 
@@ -633,8 +645,8 @@ test('恢复默认把缩放、壁纸、位置、折叠全部还原', async () =>
 test('点标题行上的按钮不会顺手把卡片拖走', async () => {
   const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
   await new Promise((resolve) => setImmediate(resolve))
-  const head = ctx.widget.children[0]
-  const gear = head.children[2]
+  const head = headOf(ctx)
+  const gear = headButtons(ctx)[1]
 
   // 挂载时会把 right/bottom 折算成 left/top，所以基线不是 undefined。
   const baselineLeft = ctx.widget.style.left
@@ -870,4 +882,165 @@ test('恢复默认也把「隐藏菜单按钮」还原成显示状态', async ()
   assert.equal(ctx.widget.getAttribute('data-menu-hidden'), null, 'reset must bring the buttons back')
   const saved = JSON.parse(ctx.storage.get('dsh-eta-forecast:v1'))
   assert.equal(saved.menuHidden, false)
+})
+
+/* ---------- 会话切换（左上角胶囊） ---------- */
+
+/** 造一条运行中的会话快照。 */
+function sessionSnap(id, title, extra) {
+  const now = Date.now()
+  return Object.assign({
+    id, title, phase: 'running', elapsedMs: 60_000, remainMs: 60_000,
+    etaAt: now + 60_000, confidence: 'medium', source: 'steps',
+    progress: 0.5, total: 2, completed: 1, inProgress: 0, pending: 1,
+    currentTask: '', steps: 5, paused: false, pausedMs: 0, updatedAt: now,
+  }, extra || {})
+}
+
+/** 取切换行里的所有胶囊。 */
+function chipsOf(ctx) {
+  const bar = nodeOf(ctx.widget, 'dsh-eta-switcher')
+  if (!bar) return []
+  return bar.children.filter((child) => child.className === 'dsh-eta-chip')
+}
+
+test('只有一条会话时不显示切换行（没得切）', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [sessionSnap('s1', '唯一会话')] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const bar = nodeOf(ctx.widget, 'dsh-eta-switcher')
+  assert.ok(bar, 'switcher row must exist in the DOM')
+  assert.equal(bar.getAttribute('data-visible'), '0', 'a single session must not show the switcher')
+  assert.equal(chipsOf(ctx).length, 0)
+})
+
+test('两条以上会话时显示切换行，并标出当前那条', async () => {
+  const ctx = bootClient([{
+    ok: true,
+    now: Date.now(),
+    sessions: [sessionSnap('s1', '第一条'), sessionSnap('s2', '第二条'), sessionSnap('s3', '第三条')],
+  }])
+  await new Promise((resolve) => setImmediate(resolve))
+
+  const bar = nodeOf(ctx.widget, 'dsh-eta-switcher')
+  assert.equal(bar.getAttribute('data-visible'), '1')
+  const chips = chipsOf(ctx)
+  assert.equal(chips.length, 3, 'one chip per session, got ' + chips.length)
+  assert.equal(chips[0].getAttribute('data-active'), '1', 'first is active by default')
+  assert.equal(chips[1].getAttribute('data-active'), '0')
+  // 标题就是胶囊文案
+  assert.equal(chips[1].textContent, '第二条')
+  // 运行中的会有标记
+  assert.equal(chips[0].getAttribute('data-running'), '1')
+})
+
+test('点另一个胶囊立刻切换卡片内容（不等下一轮轮询）', async () => {
+  const ctx = bootClient([{
+    ok: true,
+    now: Date.now(),
+    sessions: [
+      // steps 不同、清单也不同：用清单区分，因为底部优先显示「x/y 项」
+      sessionSnap('s1', '第一条', { total: 0, steps: 5 }),
+      sessionSnap('s2', '第二条', { total: 0, steps: 42 }),
+    ],
+  }])
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.equal(textOf(ctx.widget, 'dsh-eta-title'), '第一条')
+  assert.equal(textOf(ctx.widget, 'dsh-eta-foot').indexOf('第 5 步') !== -1, true)
+
+  chipsOf(ctx)[1].dispatch('click', CLICK)
+
+  // 立刻变成第二条的内容 —— 这是「点了就要有反应」的关键
+  assert.equal(textOf(ctx.widget, 'dsh-eta-title'), '第二条')
+  assert.equal(textOf(ctx.widget, 'dsh-eta-foot').indexOf('第 42 步') !== -1, true,
+    'switching must re-render immediately, got ' + textOf(ctx.widget, 'dsh-eta-foot'))
+  assert.equal(chipsOf(ctx)[1].getAttribute('data-active'), '1')
+  assert.equal(chipsOf(ctx)[0].getAttribute('data-active'), '0')
+})
+
+test('切换后的选择下一轮轮询仍然保持（不被自动排序拉回）', async () => {
+  const now = Date.now()
+  // 宿主把运行中的排在前面；用户手动选了「已结束」那条，轮询不该把选择抢回去。
+  const running = sessionSnap('s1', '在跑的', { phase: 'running' })
+  const done = sessionSnap('s2', '已完成的', {
+    phase: 'done', endReason: 'completed', elapsedMs: 120_000, remainMs: null, etaAt: null,
+    progress: 1, total: 2, completed: 2, inProgress: 0, pending: 0, updatedAt: now - 1000,
+  })
+  const ctx = bootClient([{ ok: true, now, sessions: [running, done] }])
+  await new Promise((resolve) => setImmediate(resolve))
+
+  chipsOf(ctx)[1].dispatch('click', CLICK)
+  assert.equal(textOf(ctx.widget, 'dsh-eta-title'), '已完成的')
+
+  // 触发下一次轮询（同一个 payload）
+  ctx.poll()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(textOf(ctx.widget, 'dsh-eta-title'), '已完成的',
+    'polling must not steal the user choice back to the default session')
+  assert.equal(chipsOf(ctx)[1].getAttribute('data-active'), '1')
+})
+
+test('钉住的会话消失后自动回落到默认会话', async () => {
+  const payloadTwo = {
+    ok: true,
+    now: Date.now(),
+    sessions: [sessionSnap('s1', '第一条'), sessionSnap('s2', '第二条')],
+  }
+  const ctx = bootClient([payloadTwo])
+  await new Promise((resolve) => setImmediate(resolve))
+
+  chipsOf(ctx)[1].dispatch('click', CLICK)
+  assert.equal(textOf(ctx.widget, 'dsh-eta-title'), '第二条')
+
+  // 下一条快照里「第二条」不见了（会话被清理）
+  ctx.window.fetch = () => Promise.resolve({
+    ok: true, status: 200,
+    json: () => Promise.resolve({
+      ok: true, now: Date.now(), sessions: [sessionSnap('s1', '第一条')],
+    }),
+  })
+  ctx.poll()
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.equal(textOf(ctx.widget, 'dsh-eta-title'), '第一条',
+    'a vanished session must fall back to the default instead of going blank')
+  assert.equal(nodeOf(ctx.widget, 'dsh-eta-switcher').getAttribute('data-visible'), '0',
+    'back to one session → switcher hides itself')
+})
+
+test('没有标题的会话用 id 尾巴当胶囊文案（而不是全叫「未命名」）', async () => {
+  const ctx = bootClient([{
+    ok: true,
+    now: Date.now(),
+    sessions: [
+      sessionSnap('session-abcdef12-3456', ''),
+      sessionSnap('session-99ff00aa-bbbb', ''),
+    ],
+  }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const chips = chipsOf(ctx)
+  assert.equal(chips.length, 2)
+  assert.notEqual(chips[0].textContent, chips[1].textContent, 'two untitled sessions must be distinguishable')
+  assert.ok(chips[0].textContent.indexOf('abcd') !== -1, 'label should use the id tail, got ' + chips[0].textContent)
+})
+
+test('点胶囊不会顺手把卡片拖走', async () => {
+  const ctx = bootClient([{
+    ok: true,
+    now: Date.now(),
+    sessions: [sessionSnap('s1', '第一条'), sessionSnap('s2', '第二条')],
+  }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const baselineLeft = ctx.widget.style.left
+
+  const chip = chipsOf(ctx)[1]
+  // 胶囊自己 stopPropagation，所以卡片的拖动逻辑收不到这个按下。
+  // 事件对象必须带 stopPropagation —— 真实的事件永远有它。
+  chip.dispatch('pointerdown', {
+    button: 0, clientX: 100, clientY: 100, pointerId: 77, stopPropagation() {},
+  })
+  chip.dispatch('pointermove', { clientX: 300, clientY: 300, pointerId: 77 })
+  chip.dispatch('pointerup', { pointerId: 77 })
+
+  assert.equal(ctx.widget.style.left, baselineLeft, 'clicking a chip must not drag the card')
 })
