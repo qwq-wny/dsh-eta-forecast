@@ -470,6 +470,69 @@ test('收起按钮切换状态并写进 localStorage', async () => {
   assert.equal(saved.collapsed, true)
 })
 
+/* ---------- 折叠：只留进度条，不留文字 ---------- */
+
+/** 造一条「有进度」的运行中快照。 */
+function runningWithProgress() {
+  const now = Date.now()
+  return {
+    ok: true, now,
+    sessions: [{
+      id: 's1', title: '任务', phase: 'running', elapsedMs: 60_000,
+      remainMs: 60_000, etaAt: now + 60_000, confidence: 'medium', source: 'steps',
+      progress: 0.42, progressSource: 'steps', total: 0, completed: 0, inProgress: 0, pending: 0,
+      currentTask: '', steps: 8, paused: false, pausedMs: 0, updatedAt: now,
+    }],
+  }
+}
+
+test('折叠时根节点标记「有进度」，供 CSS 切到进度条', async () => {
+  const ctx = bootClient([runningWithProgress()])
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(ctx.widget.getAttribute('data-bar'), '1',
+    'the collapsed layout needs to know progress exists')
+  const bar = nodeOf(ctx.widget, 'dsh-eta-bar')
+  assert.equal(bar.getAttribute('data-on'), '1')
+})
+
+test('没有进度可显示时标记为 0（折叠后要退回标题文字）', async () => {
+  const now = Date.now()
+  const ctx = bootClient([{
+    ok: true, now,
+    sessions: [{
+      id: 's1', title: '刚开始', phase: 'running', elapsedMs: 3000,
+      remainMs: null, etaAt: null, confidence: 'none', source: 'none',
+      progress: null, progressSource: 'none', total: 0, completed: 0, inProgress: 0, pending: 0,
+      currentTask: '', steps: 1, paused: false, pausedMs: 0, updatedAt: now,
+    }],
+  }])
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(ctx.widget.getAttribute('data-bar'), '0',
+    'with nothing to show the collapsed card must fall back to the title, '
+    + 'otherwise it is just two anonymous buttons')
+})
+
+test('已结束的轮次也算「有进度」（折叠时显示满条）', async () => {
+  const now = Date.now()
+  const ctx = bootClient([{
+    ok: true, now,
+    sessions: [{
+      id: 's1', title: '', phase: 'done', endReason: 'completed',
+      elapsedMs: 125_000, remainMs: null, etaAt: null, confidence: 'none', source: 'none',
+      progress: 1, total: 3, completed: 3, inProgress: 0, pending: 0,
+      currentTask: '', steps: 9, paused: false, pausedMs: 0, updatedAt: now,
+    }],
+  }])
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(ctx.widget.getAttribute('data-bar'), '1')
+})
+
+test('空闲（没有会话）时标记为 0', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(ctx.widget.getAttribute('data-bar'), '0')
+})
+
 test('宿主返回 3 次失败才清空显示（一次抖动不该抹掉 ETA）', async () => {
   const now = Date.now()
   const good = {

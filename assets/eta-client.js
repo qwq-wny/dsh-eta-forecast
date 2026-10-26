@@ -300,7 +300,26 @@
     'color:var(--dsw-alias-label-secondary,rgba(60,70,90,.9));',
     'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}',
     '.dsh-eta-pause{margin-top:7px;font-size:11px;font-weight:600;color:#b46214}',
-    '.dsh-eta-root-collapsed .dsh-eta-body{display:none}',
+    /**
+     * 折叠（最小化）：**只留进度条，不留文字** —— 折叠的意义就是「一眼看进度」，
+     * 留一行「预计完成」占着地方却什么信息都没给。
+     *
+     * 用 data-bar 标记而不是 :has()：:has() 要 Chromium 105+，
+     * 而这里的判定逻辑本来就在 JS 里（render 已经知道有没有进度），
+     * 走属性更直接、也能被单测覆盖。
+     */
+    '.dsh-eta-root-collapsed{display:flex;align-items:center;gap:8px}',
+    // 折叠时不显示会话胶囊：胶囊是「切换看哪条」的，和「只看进度」的意图冲突
+    '.dsh-eta-root-collapsed .dsh-eta-switcher{display:none}',
+    '.dsh-eta-root-collapsed .dsh-eta-head{order:2;flex:none;gap:4px}',
+    // body 留在布局里，但只放进度条出来
+    '.dsh-eta-root-collapsed .dsh-eta-body{order:1;flex:1;min-width:0;display:block}',
+    '.dsh-eta-root-collapsed .dsh-eta-body>*:not(.dsh-eta-bar){display:none}',
+    '.dsh-eta-root-collapsed .dsh-eta-bar{margin-top:0}',
+    '.dsh-eta-root-collapsed .dsh-eta-title{display:none}',
+    // 没有进度可显示时退回标题文字 —— 否则折叠后就剩两个孤零零的按钮，
+    // 用户认不出这是什么。（进度条本身在 data-on=0 时也是收起的。）
+    '.dsh-eta-root-collapsed[data-bar="0"] .dsh-eta-title{display:block}',
     '.dsh-eta-badge{font-size:10.5px;padding:1px 6px;border-radius:99px;white-space:nowrap;',
     'background:rgba(127,127,127,.16)}',
     '.dsh-eta-badge[data-confidence="high"]{background:rgba(7,150,90,.16);color:#07974b}',
@@ -1684,6 +1703,28 @@
     return ' · 近几轮偏差约 ' + pct + '%'
   }
 
+  /**
+   * 设置进度条状态，并在根节点上同步一份「现在有没有进度」。
+   *
+   * 折叠状态靠根节点的 data-bar 决定显示进度条还是退回标题文字 ——
+   * 折叠后没进度可看时只剩两个按钮，用户会认不出这是什么。
+   * 所有分支都走这里，避免三处各写一遍、漏掉一处就对不上。
+   */
+  function setBar(on, opts) {
+    if (on) {
+      nodes.bar.setAttribute('data-on', '1')
+      if (opts && opts.source) nodes.bar.setAttribute('data-source', opts.source)
+      else nodes.bar.removeAttribute('data-source')
+      if (opts && opts.title) nodes.bar.title = opts.title
+      else nodes.bar.removeAttribute('title')
+    } else {
+      nodes.bar.setAttribute('data-on', '0')
+      nodes.bar.removeAttribute('data-source')
+      nodes.bar.removeAttribute('title')
+    }
+    nodes.root.setAttribute('data-bar', on ? '1' : '0')
+  }
+
   function render(snapshot) {
     if (!nodes) return
     current = snapshot
@@ -1695,9 +1736,7 @@
       nodes.sub.textContent = '还没有进行中的对话'
       nodes.fill.style.width = '0%'
       // 没有会话时也没进度可显示，整条收起。
-      nodes.bar.setAttribute('data-on', '0')
-      nodes.bar.removeAttribute('data-source')
-      nodes.bar.removeAttribute('title')
+      setBar(false)
       nodes.footLeft.textContent = ''
       nodes.badge.textContent = '空闲'
       nodes.badge.setAttribute('data-confidence', 'none')
@@ -1719,9 +1758,7 @@
       nodes.sub.textContent = '上一轮用时 ' + durationOf(snapshot.elapsedMs) + reasonText
       // 已结束的轮次进度就是满的。
       nodes.fill.style.width = '100%'
-      nodes.bar.setAttribute('data-on', '1')
-      nodes.bar.removeAttribute('data-source')
-      nodes.bar.title = '这一轮已经结束'
+      setBar(true, { title: '这一轮已经结束' })
       nodes.footLeft.textContent = clockOf(endedAt) ? clockOf(endedAt) + ' 结束' : ''
       nodes.badge.textContent = '空闲'
       nodes.badge.setAttribute('data-confidence', 'none')
@@ -1762,17 +1799,16 @@
     if (hasProgress) {
       var pct = Math.max(0, Math.min(100, snapshot.progress * 100))
       nodes.fill.style.width = pct.toFixed(1) + '%'
-      nodes.bar.setAttribute('data-on', '1')
       // 步数代理的进度不是真进度，标一下来源，别让它冒充清单进度。
-      nodes.bar.setAttribute('data-source', snapshot.progressSource === 'steps' ? 'steps' : 'todos')
-      nodes.bar.title = snapshot.progressSource === 'steps'
-        ? '按已走步数估算的进度（这一轮没有 todo 清单）'
-        : '按 todo 清单估算的进度'
+      setBar(true, {
+        source: snapshot.progressSource === 'steps' ? 'steps' : 'todos',
+        title: snapshot.progressSource === 'steps'
+          ? '按已走步数估算的进度（这一轮没有 todo 清单）'
+          : '按 todo 清单估算的进度',
+      })
     } else {
       nodes.fill.style.width = '0%'
-      nodes.bar.setAttribute('data-on', '0')
-      nodes.bar.removeAttribute('data-source')
-      nodes.bar.removeAttribute('title')
+      setBar(false)
     }
 
     if (snapshot.total > 0) {
