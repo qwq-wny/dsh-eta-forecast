@@ -165,6 +165,10 @@ function makeDocument() {
 /** 跑一遍客户端脚本，返回它用的 window/document 与「渲染后的挂件根节点」。 */
 function bootClient(snapshotResponses, options) {
   const doc = makeDocument()
+  // 桌面端分支靠这个属性判定（客户端在加载时读一次）。
+  if (options && options.desktop) {
+    doc.documentElement.setAttribute('data-dsh-eta-desktop', '1')
+  }
   const root = new FakeNode('div', doc)
   root.id = 'root'
   doc.byId.set('root', root)
@@ -176,6 +180,11 @@ function bootClient(snapshotResponses, options) {
 
   const timers = []
   let pollIndex = 0
+  /**
+   * 桌面端把拖动位移通过 window 上的 CustomEvent 交给渲染壳，
+   * 所以垫片必须真的把事件与 detail 记下来 —— 否则这条路径完全测不到。
+   */
+  const desktopEvents = []
 
   const window = {
     innerWidth: 1280,
@@ -196,7 +205,14 @@ function bootClient(snapshotResponses, options) {
       })
     },
     addEventListener() {},
-    dispatchEvent() {},
+    dispatchEvent(event) {
+      // 别写 `event.detail || {}`：false 是合法 detail（busy 释放），会被吞掉。
+      desktopEvents.push({
+        type: event && event.type,
+        detail: event && 'detail' in event ? event.detail : {},
+      })
+      return true
+    },
     requestAnimationFrame(handler) { handler(0) },
     setInterval(handler) { timers.push(handler); return timers.length },
     clearInterval() {},
@@ -208,7 +224,13 @@ function bootClient(snapshotResponses, options) {
       observe() {}
       disconnect() {}
     },
-    CustomEvent: class { constructor(type) { this.type = type } },
+    CustomEvent: class {
+      // 同上：detail 可能是 false，不能被 `|| {}` 吃掉。
+      constructor(type, init) {
+        this.type = type
+        this.detail = init && 'detail' in init ? init.detail : {}
+      }
+    },
   }
 
   const sandbox = {
@@ -238,7 +260,10 @@ function bootClient(snapshotResponses, options) {
 
   const widget = doc.getElementById('dsh-eta-root')
   assert.ok(widget, 'client must mount #dsh-eta-root once the chat root exists')
-  return { doc, window, widget, storage, timers, poll: () => timers[0] && timers[0]() }
+  return {
+    doc, window, widget, storage, timers, desktopEvents,
+    poll: () => timers[0] && timers[0](),
+  }
 }
 
 /** 取挂件里第一个 class 匹配的节点。 */
@@ -1113,4 +1138,94 @@ test('点胶囊不会顺手把卡片拖走', async () => {
   chip.dispatch('pointerup', { pointerId: 77 })
 
   assert.equal(ctx.widget.style.left, baselineLeft, 'clicking a chip must not drag the card')
+})
+
+/* ---------- 桌面端：拖的是窗口，不是元素 ---------- */
+
+/** 取某类桌面事件的全部 detail。 */
+function desktopEventsOf(ctx, type) {
+  return ctx.desktopEvents.filter((e) => e.type === type).map((e) => e.detail)
+}
+
+test('桌面端按下拖动时会通知渲染壳「开始拖」并锁住可交互状态', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }], { desktop: true })
+  await new Promise((resolve) => setImmediate(resolve))
+
+  ctx.widget.dispatch('pointerdown', {
+    button: 0, clientX: 100, clientY: 100, screenX: 900, screenY: 500,
+    pointerId: 1, target: null, stopPropagation() {},
+  })
+  assert.equal(desktopEventsOf(ctx, 'dsh-eta-desktop-drag-start').length, 1)
+  assert.deepEqual(desktopEventsOf(ctx, 'dsh-eta-desktop-busy'), [true])
+})
+
+test('桌面端的位移用**屏幕坐标**（clientX 会被窗口自己的移动抵消掉）', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }], { desktop: true })
+  await new Promise((resolve) => setImmediate(resolve))
+
+  ctx.widget.dispatch('pointerdown', {
+    button: 0, clientX: 100, clientY: 100, screenX: 900, screenY: 500,
+    pointerId: 1, target: null, stopPropagation() {},
+  })
+  // 窗口已经跟着光标走了：client 坐标几乎没变，屏幕坐标却移了 -150/-80。
+  ctx.widget.dispatch('pointermove', {
+    clientX: 98, clientY: 97, screenX: 750, screenY: 420, pointerId: 1,
+  })
+
+  const moves = desktopEventsOf(ctx, 'dsh-eta-desktop-move')
+  assert.equal(moves.length, 1, 'one pointermove → one desktop-move')
+  assert.equal(moves[0].dx, -150, 'dx must come from screenX, not clientX')
+  assert.equal(moves[0].dy, -80, 'dy must come from screenY, not clientY')
+})
+
+test('桌面端不写 left/top（那是网页端的做法，会把卡片挪出窗口）', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }], { desktop: true })
+  await new Promise((resolve) => setImmediate(resolve))
+  const baselineLeft = ctx.widget.style.left
+  const baselineTop = ctx.widget.style.top
+
+  ctx.widget.dispatch('pointerdown', {
+    button: 0, clientX: 100, clientY: 100, screenX: 900, screenY: 500,
+    pointerId: 1, target: null, stopPropagation() {},
+  })
+  ctx.widget.dispatch('pointermove', {
+    clientX: 98, clientY: 97, screenX: 750, screenY: 420, pointerId: 1,
+  })
+  ctx.widget.dispatch('pointerup', { pointerId: 1, clientX: 98, clientY: 97 })
+
+  assert.equal(ctx.widget.style.left, baselineLeft, 'desktop must move the window, not the element')
+  assert.equal(ctx.widget.style.top, baselineTop)
+  assert.deepEqual(desktopEventsOf(ctx, 'dsh-eta-desktop-busy'), [true, false],
+    'busy must be released on pointerup')
+})
+
+test('桌面端位移小于阈值时不算拖动（右键原地松开仍然开设置）', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }], { desktop: true })
+  await new Promise((resolve) => setImmediate(resolve))
+
+  ctx.widget.dispatch('pointerdown', {
+    button: 2, clientX: 100, clientY: 100, screenX: 900, screenY: 500,
+    pointerId: 1, target: null, stopPropagation() {},
+  })
+  // 屏幕坐标只动了 1px：低于 3px 阈值，应当既不移动窗口、也不弹菜单
+  ctx.widget.dispatch('pointermove', {
+    clientX: 100, clientY: 100, screenX: 901, screenY: 500, pointerId: 1,
+  })
+  assert.equal(desktopEventsOf(ctx, 'dsh-eta-desktop-move').length, 0,
+    'a 1px jitter must not be treated as a drag')
+})
+
+test('没有 screenX 时退回 client 坐标（老浏览器/垫片）', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }], { desktop: true })
+  await new Promise((resolve) => setImmediate(resolve))
+
+  ctx.widget.dispatch('pointerdown', {
+    button: 0, clientX: 100, clientY: 100, pointerId: 1, target: null, stopPropagation() {},
+  })
+  ctx.widget.dispatch('pointermove', { clientX: 40, clientY: 70, pointerId: 1 })
+
+  const moves = desktopEventsOf(ctx, 'dsh-eta-desktop-move')
+  assert.equal(moves.length, 1)
+  assert.equal(moves[0].dx, -60, 'fallback must use clientX when screenX is absent')
+  assert.equal(moves[0].dy, -30)
 })

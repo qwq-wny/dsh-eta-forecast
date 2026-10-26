@@ -42,11 +42,18 @@
     }
   })()
 
-  /** 桌面端事件通道：把拖动位移交给渲染壳换算成窗口坐标。网页端是空操作。 */
+  /**
+   * 桌面端事件通道：把拖动位移交给渲染壳换算成窗口坐标。网页端是空操作。
+   *
+   * 注意 `arguments.length` 那一手：`detail || {}` 会把**合法的 false** 变成 `{}`，
+   * 于是渲染壳的 `!!detail` 永远为真 —— 表现是「拖动结束后 busy 锁再也不释放」，
+   * 整窗点击穿透从第一次拖动之后就失效了。布尔型 detail 必须原样传出去。
+   */
   function emitDesktop(type, detail) {
     if (!IS_DESKTOP) return
     try {
-      window.dispatchEvent(new CustomEvent(type, { detail: detail || {} }))
+      var payload = arguments.length > 1 ? detail : {}
+      window.dispatchEvent(new CustomEvent(type, { detail: payload }))
     } catch (err) {
       /* 老浏览器 / 测试垫片没有 CustomEvent，忽略即可 */
     }
@@ -582,6 +589,13 @@
     if (nodes.gear) nodes.gear.setAttribute('data-active', '1')
     syncPanelValues()
     positionPanel()
+    // 桌面窗口是独立的一小块，装不下面板就会被裁掉一半；面板是首次打开才创建的，
+    // 开窗时量不到它的真实高度，所以这里把「面板开了多大」告诉渲染壳，让它重算窗口。
+    emitDesktop('dsh-eta-desktop-fit', {
+      open: true,
+      panelWidth: panel.offsetWidth || 252,
+      panelHeight: panel.offsetHeight || 320,
+    })
     // 显示位置是宿主级设置，每次打开面板都问一次（别人可能刚在别处改过）。
     refreshDisplayMode()
   }
@@ -590,6 +604,8 @@
     if (!panel) return
     panel.setAttribute('data-hidden', '1')
     if (nodes && nodes.gear) nodes.gear.removeAttribute('data-active')
+    // 面板收起来了，窗口缩回「只放卡片」的大小 —— 没必要留在屏幕上占一块透明区域。
+    emitDesktop('dsh-eta-desktop-fit', { open: false })
   }
 
   function positionPanel() {
@@ -1201,6 +1217,16 @@
   function installDrag(handle) {
     var startX = 0
     var startY = 0
+    /**
+     * 桌面端专用：按下时的**屏幕**坐标。
+     *
+     * 桌面端拖的是整个窗口，而窗口一动，窗口内的坐标系也跟着动 ——
+     * 用 `clientX` 算位移会出现「自己抵消自己」：窗口追上了光标，clientX 就回到原位，
+     * 位移归零，窗口随即停住。表现就是「拖不动」或只跳一下。
+     * `screenX/screenY` 是屏幕坐标，不受窗口自身移动影响，所以桌面端必须用它。
+     */
+    var startScreenX = 0
+    var startScreenY = 0
     var originLeft = 0
     var originTop = 0
     var moved = false
@@ -1227,6 +1253,9 @@
       var rect = nodes.root.getBoundingClientRect()
       startX = event.clientX
       startY = event.clientY
+      // 屏幕坐标兜底到 client 坐标：测试垫片与老浏览器不一定提供 screenX。
+      startScreenX = typeof event.screenX === 'number' ? event.screenX : event.clientX
+      startScreenY = typeof event.screenY === 'number' ? event.screenY : event.clientY
       originLeft = rect.left
       originTop = rect.top
       moved = false
@@ -1254,13 +1283,22 @@
       var dx = event.clientX - startX
       var dy = event.clientY - startY
       if (!moved) {
-        if (Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return
+        var probeX = IS_DESKTOP
+          ? (typeof event.screenX === 'number' ? event.screenX : event.clientX) - startScreenX
+          : dx
+        var probeY = IS_DESKTOP
+          ? (typeof event.screenY === 'number' ? event.screenY : event.clientY) - startScreenY
+          : dy
+        if (Math.abs(probeX) + Math.abs(probeY) < DRAG_THRESHOLD) return
         moved = true
         dragging = true
       }
       if (IS_DESKTOP) {
-        // 桌面端：把位移交给壳换算成窗口坐标。
-        emitDesktop('dsh-eta-desktop-move', { dx: dx, dy: dy })
+        // 桌面端：位移必须用**屏幕坐标**（见 startScreenX 的注释）——
+        // 窗口跟着光标走，clientX 的差会被自己抵消掉。
+        var sdx = (typeof event.screenX === 'number' ? event.screenX : event.clientX) - startScreenX
+        var sdy = (typeof event.screenY === 'number' ? event.screenY : event.clientY) - startScreenY
+        emitDesktop('dsh-eta-desktop-move', { dx: sdx, dy: sdy })
         return
       }
       // 用可视尺寸（getBoundingClientRect）而不是 offsetWidth：

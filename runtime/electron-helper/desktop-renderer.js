@@ -42,12 +42,26 @@ function hideError() {
   errorEl.textContent = ''
 }
 
-/** 窗口内容尺寸：挂件最大 236px 宽，加上设置面板可能弹出的空间。 */
-const WIN_W = 300
-const WIN_H = 210
+/** 窗口内容尺寸的兜底值（真实值由 geometry.windowSizeFor 按内容算出来）。 */
+const FALLBACK_W = 320
+const FALLBACK_H = 560
 
-/** 挂件在窗口内的留白（挂件靠右下角摆放，设置面板从左上弹出）。 */
-const PAD = 12
+/** 挂件在窗口内的留白（挂件贴右下角，设置面板从上方弹出）。 */
+const PAD = 16
+/** 卡片与设置面板之间的间隙（必须与 assets/eta-client.js 的 positionPanel 一致）。 */
+const PANEL_GAP = 8
+
+/** 几何计算：纯函数，另有单测（test/geometry.test.js）。 */
+const geometry = window.DshEtaGeometry || {
+  moveWindow: (input) => ({
+    x: Math.round(input.baseX + input.dx),
+    y: Math.round(input.baseY + input.dy),
+    width: input.width,
+    height: input.height,
+  }),
+  hitTestPoint: () => false,
+  windowSizeFor: () => ({ width: FALLBACK_W, height: FALLBACK_H }),
+}
 
 async function main() {
   trace('boot', { href: location.href, hasBridge: Boolean(window.etaBridge) })
@@ -122,23 +136,89 @@ async function main() {
   const work = await bridge.getWorkArea().catch(() => null)
   const area = work && work.width > 0 ? work : { x: 0, y: 0, width: 1280, height: 800 }
 
-  const width = Math.min(WIN_W, area.width)
-  const height = Math.min(WIN_H, area.height)
-  const x = area.x + area.width - width
-  const y = area.y + area.height - height
+  const rootEl = document.getElementById('dsh-eta-root')
+  const cardRect = rootEl ? rootEl.getBoundingClientRect() : null
+
+  /** 卡片尺寸：面板开关时用它算窗口该多大。 */
+  const cardW = Math.round((cardRect && cardRect.width) || 236)
+  const cardH = Math.round((cardRect && cardRect.height) || 170)
+
+  /**
+   * 按「卡片 + 面板（可选）」算出窗口要多大。
+   *
+   * 面板是首次打开才创建的，插件启动时量不到它，所以启动先按默认值开窗，
+   * 面板一打开就由 `dsh-eta-desktop-fit` 带着真实尺寸重算一次 ——
+   * 早先固定 300×210，面板开出来只看得见一半。
+   */
+  function boundsFor(panel) {
+    const size = geometry.windowSizeFor({
+      area,
+      cardW,
+      cardH,
+      panelW: (panel && panel.panelWidth) || 252,
+      panelH: (panel && panel.panelHeight) || 320,
+      edge: PAD,
+      gap: PANEL_GAP,
+    })
+    const width = Math.max(1, Math.min(size.width, area.width))
+    const height = Math.max(1, Math.min(size.height, area.height))
+    return {
+      width,
+      height,
+      // 向右下角锚定：卡片贴窗口右下，所以窗口变高只是向上多出一块透明区域，
+      // 卡片在屏幕上的位置不变。
+      x: area.x + area.width - width,
+      y: area.y + area.height - height,
+    }
+  }
+
+  const initial = boundsFor(null)
+  trace('window size', { width: initial.width, height: initial.height })
+  const width = initial.width
+  const height = initial.height
+  const x = initial.x
+  const y = initial.y
+
+  /**
+   * 窗口**当前**位置。拖动时用「当前值 + 本次位移」，而不是每次回到初始值 ——
+   * 否则第二次拖动会跳回原位。落点以主进程回报的 eta:bounds 为准（它还要夹进工作区）。
+   */
+  let curX = x
+  let curY = y
+  let curW = width
+  let curH = height
+
+  if (typeof bridge.onBounds === 'function') {
+    bridge.onBounds((bounds) => {
+      if (!bounds) return
+      if (Number.isFinite(bounds.x)) curX = bounds.x
+      if (Number.isFinite(bounds.y)) curY = bounds.y
+      if (Number.isFinite(bounds.width)) curW = bounds.width
+      if (Number.isFinite(bounds.height)) curH = bounds.height
+    })
+  }
+
   bridge.setBounds(x, y, width, height)
 
-  /* ---------- 点击穿透：只有光标在挂件上时才可交互 ---------- */
+  /* ---------- 点击穿透：只有光标在挂件（或设置面板）上时才可交互 ---------- */
 
   let interactive = false
   let busy = false
 
+  /**
+   * 可交互区域 = 卡片 + （打开着的）设置面板。
+   *
+   * 早先只算卡片，于是面板一打开，光标移上去就被判成「不在挂件上」→
+   * 整窗翻回点击穿透 → **面板点不动**。桌面端的设置面板从来没法用，就是这个原因。
+   */
   function hitTest(clientX, clientY) {
-    const root = document.getElementById('dsh-eta-root')
-    if (!root) return null
-    const rect = root.getBoundingClientRect()
-    if (rect.width <= 0 || rect.height <= 0) return null
-    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom
+    const card = document.getElementById('dsh-eta-root')
+    const panel = document.getElementById('dsh-eta-panel')
+    const panelOpen = panel && panel.getAttribute('data-hidden') !== '1'
+    return geometry.hitTestPoint({
+      card: card ? card.getBoundingClientRect() : null,
+      panel: panelOpen ? panel.getBoundingClientRect() : null,
+    }, clientX, clientY)
   }
 
   function updateInteractive(clientX, clientY) {
@@ -171,23 +251,52 @@ async function main() {
     }
   })
 
-  // 拖动：客户端脚本不改 left/top，而是把目标屏幕坐标发上来。
-  // 它通过 dispatchEvent 把位移交给我们换算成窗口坐标。
+  // 拖动：客户端脚本不改 left/top，而是把**屏幕坐标**位移发上来，
+  // 这里换算成窗口位置。位移是相对按下点的累计值（见 assets/eta-client.js 的 startScreenX）。
+  //
+  // 关键是基准取 `curX/curY`（窗口当前位置）而不是初始位置 ——
+  // 否则拖完一次再拖，窗口会先跳回原位。
+  let baseX = x
+  let baseY = y
+
+  window.addEventListener('dsh-eta-desktop-drag-start', () => {
+    baseX = curX
+    baseY = curY
+    trace('drag start', { baseX, baseY })
+  })
+
   window.addEventListener('dsh-eta-desktop-move', (event) => {
     const detail = (event && event.detail) || {}
     const dx = Number(detail.dx)
     const dy = Number(detail.dy)
     if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
-    const nextX = Math.max(area.x, Math.min(area.x + area.width - width, baseX + dx))
-    const nextY = Math.max(area.y, Math.min(area.y + area.height - height, baseY + dy))
-    bridge.setBounds(Math.round(nextX), Math.round(nextY), width, height)
+    const next = geometry.moveWindow({
+      baseX, baseY, dx, dy, width: curW, height: curH, area,
+    })
+    bridge.setBounds(next.x, next.y, next.width, next.height)
   })
 
-  let baseX = x
-  let baseY = y
-  window.addEventListener('dsh-eta-desktop-drag-start', () => {
-    baseX = x
-    baseY = y
+  /**
+   * 设置面板开/关时重算窗口大小。
+   *
+   * 面板是首次打开才创建的，插件启动时量不到它，所以不能只在启动时定尺寸
+   * （早先固定 300×210，面板开出来只看得见一半）。
+   *
+   * 尺寸变化要**锚住右下角**：卡片贴在窗口右下，只有保持右边缘与下边缘不动，
+   * 卡片在屏幕上的位置才不会跟着窗口一起跳。
+   */
+  window.addEventListener('dsh-eta-desktop-fit', (event) => {
+    const detail = (event && event.detail) || {}
+    const want = boundsFor(detail.open ? detail : null)
+    if (want.width === curW && want.height === curH) return
+    const next = geometry.resizeAnchored({
+      curX, curY, curW, curH,
+      width: want.width,
+      height: want.height,
+      area,
+    })
+    trace('fit', { open: Boolean(detail.open), ...next })
+    bridge.setBounds(next.x, next.y, next.width, next.height)
   })
 }
 

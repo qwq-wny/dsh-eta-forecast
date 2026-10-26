@@ -21,6 +21,16 @@ contextBridge.exposeInMainWorld('etaBridge', {
   setBounds(x, y, width, height) {
     ipcRenderer.send('eta:set-bounds', { x, y, width, height })
   },
+  /**
+   * 订阅「实际生效的窗口位置」。
+   *
+   * 拖动请求会被主进程夹进显示器工作区，真实落点未必等于请求值；
+   * 渲染端据此更新当前基准，下一次拖动才不会跳。
+   */
+  onBounds(callback) {
+    if (typeof callback !== 'function') return
+    ipcRenderer.on('eta:bounds', (event, bounds) => callback(bounds))
+  },
   /** 宿主注入的配置：快照地址、允许的跨源。 */
   getConfig() {
     return ipcRenderer.invoke('eta:get-config')

@@ -46,6 +46,10 @@
   </head>
   <body>
     <div id="dsh-eta-desktop-error"></div>
+    <!-- 几何计算单独一件，既给渲染页用（window.DshEtaGeometry），
+         也给 Node 单测用（module.exports）—— 拖动/尺寸这类算式错一次
+         就表现为「拖不动」，而透明窗口出错时肉眼几乎看不到线索。 -->
+    <script src="./geometry.js"></script>
     <script src="./desktop-renderer.js"></script>
   </body>
 </html>

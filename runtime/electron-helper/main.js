@@ -200,6 +200,10 @@ ipcMain.on('eta:input-busy', (event, busy) => {
 })
 
 // 窗口跟随拖动（渲染端把目标屏幕坐标发上来）。
+//
+// 落点还要夹进当前显示器工作区，所以**结果要以回报为准**：把实际生效的 bounds
+// 发回渲染端，它据此更新「窗口当前位置」。少了这一步，渲染端只能记住自己请求的值，
+// 一旦被夹取，下一次拖动的基准就是错的（表现为拖到屏幕边缘后再拖会跳）。
 ipcMain.on('eta:set-bounds', (event, payload) => {
   if (!win || win.isDestroyed() || !payload) return
   const x = Number(payload.x)
@@ -207,9 +211,15 @@ ipcMain.on('eta:set-bounds', (event, payload) => {
   const w = Number(payload.width) || WIN_W
   const h = Number(payload.height) || WIN_H
   if (!Number.isFinite(x) || !Number.isFinite(y)) return
+  const applied = clampToWorkArea(x, y, w, h)
   try {
-    win.setBounds(clampToWorkArea(x, y, w, h))
-  } catch (error) { /* 越界/正在关闭时忽略 */ }
+    win.setBounds(applied)
+  } catch (error) {
+    return // 越界/正在关闭时忽略，也不回报
+  }
+  try {
+    event.sender.send('eta:bounds', applied)
+  } catch (error) { /* 窗口正在销毁，忽略 */ }
 })
 
 // 渲染端想知道工作区，用于把卡片夹在屏幕内。
