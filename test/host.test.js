@@ -12,15 +12,22 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import plugin from '../lib/index.js'
 
 /** 造一个够用的假宿主 ctx。 */
-function fakeHost() {
+function fakeHost(options) {
   const handlers = new Map()
   const routes = new Map()
   const taps = []
   const effects = []
   let injectTable = []
+  // 记忆模式的状态文件目录：**必须**是每个实例独立的临时目录 ——
+  // 插件读到 undefined 会回退到真实 ~/.dsh，那正是这次污染用户配置的原因。
+  const stateHome = (options && options.stateHome)
+    || fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-eta-host-test-'))
 
   const webServer = {
     /** 端口 > 0 才会尝试拉起桌面窗口；测试里不拉。 */
@@ -40,6 +47,10 @@ function fakeHost() {
   }
 
   const ctx = {
+    // 记忆模式的状态文件目录：插件从这里读写 dsh-eta-forecast.json。
+    // 每个测试实例独立一个临时目录，否则测试之间（以及和真实 ~/.dsh 之间）
+    // 会互相读到对方的记忆。
+    stateHome,
     on(event, handler) {
       if (!handlers.has(event)) handlers.set(event, [])
       handlers.get(event).push(handler)
@@ -205,7 +216,9 @@ test('POST 从非回环地址被拒绝（局域网不能改显示设置）', asy
 test('POST 拒绝非法 display 值，不会写入奇怪内容', async () => {
   const host = fakeHost()
   plugin.apply(host.ctx)
-  for (const bad of ['', 'DESKTOP', 'everywhere', '<script>', null, 42]) {
+  // 缺省 display（'' / null / undefined）现在是合法的：它表示「只改 memory」，
+  // display 沿用当前值 —— 记忆模式开关就是这么切的。其余非法值仍然拒绝。
+  for (const bad of ['DESKTOP', 'everywhere', '<script>', 42]) {
     const out = await callConfig(host, {
       method: 'POST',
       remoteAddress: '127.0.0.1',
@@ -216,6 +229,87 @@ test('POST 拒绝非法 display 值，不会写入奇怪内容', async () => {
   const after = JSON.parse((await callConfig(host, { method: 'GET' })).body)
   assert.equal(after.display, 'both')
   host.teardown()
+})
+
+test('记忆模式：POST 只改 memory 不传 display，display 保持不变并落盘', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-eta-mem-'))
+  const host = fakeHost({ stateHome: home })
+  plugin.apply(host.ctx)
+
+  // 先把 display 改成 desktop（此时记忆开着，应当写盘）
+  await callConfig(host, {
+    method: 'POST', remoteAddress: '127.0.0.1',
+    body: JSON.stringify({ display: 'desktop' }),
+  })
+
+  // 只切 memory=false：display 不变
+  const off = JSON.parse((await callConfig(host, {
+    method: 'POST', remoteAddress: '127.0.0.1',
+    body: JSON.stringify({ memory: false }),
+  })).body)
+  assert.equal(off.memory, false)
+  assert.equal(off.display, 'desktop')
+
+  // 记忆关掉后再改 display：**不写盘**。文件里只剩 {memory:false} 一条 ——
+  // 「关掉记忆」这个事实本身要存，但 display / 窗口位置的一概不跟。
+  await callConfig(host, {
+    method: 'POST', remoteAddress: '127.0.0.1',
+    body: JSON.stringify({ display: 'none' }),
+  })
+  const saved = JSON.parse(fs.readFileSync(path.join(home, 'dsh-eta-forecast.json'), 'utf8'))
+  assert.deepEqual(saved, { memory: false },
+    'memory off → the display change must not be persisted')
+
+  // 重新开：再改一次，这次要写盘
+  await callConfig(host, {
+    method: 'POST', remoteAddress: '127.0.0.1',
+    body: JSON.stringify({ memory: true, display: 'both' }),
+  })
+  const saved2 = JSON.parse(fs.readFileSync(path.join(home, 'dsh-eta-forecast.json'), 'utf8'))
+  assert.equal(saved2.display, 'both', 'memory on → the change must be persisted')
+  assert.equal(saved2.memory, true)
+  host.teardown()
+})
+
+test('记忆模式：重启（重新 apply）后读回上次的 display', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-eta-mem-'))
+
+  const first = fakeHost({ stateHome: home })
+  plugin.apply(first.ctx)
+  await callConfig(first, {
+    method: 'POST', remoteAddress: '127.0.0.1',
+    body: JSON.stringify({ display: 'web' }),
+  })
+  first.teardown()
+
+  // 「重启」：同一个 stateHome 再 apply 一次
+  const second = fakeHost({ stateHome: home })
+  plugin.apply(second.ctx)
+  const got = JSON.parse((await callConfig(second, { method: 'GET' })).body)
+  assert.equal(got.display, 'web',
+    'the display chosen last run must survive a restart when memory is on')
+  assert.equal(got.memory, true)
+  second.teardown()
+})
+
+test('记忆模式关闭时重启回默认值（旧行为）', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-eta-mem-'))
+
+  const first = fakeHost({ stateHome: home })
+  plugin.apply(first.ctx)
+  await callConfig(first, {
+    method: 'POST', remoteAddress: '127.0.0.1',
+    body: JSON.stringify({ display: 'web', memory: false }),
+  })
+  first.teardown()
+
+  const second = fakeHost({ stateHome: home })
+  plugin.apply(second.ctx)
+  const got = JSON.parse((await callConfig(second, { method: 'GET' })).body)
+  assert.equal(got.display, 'both',
+    'memory off → a restart must fall back to the default, like before')
+  assert.equal(got.memory, false)
+  second.teardown()
 })
 
 test('POST 拒绝畸形 JSON 与不支持的方法', async () => {
@@ -396,6 +490,8 @@ test('webServer 缺席时 apply 仍然成功（降级而不是整个不挂）', 
     effect() { return () => {} },
     // 服务永远等不到 —— 模拟老宿主
     inject() {},
+    // 记忆模式的状态目录也要隔离：这个 ctx 没有 webServer，但记忆读取照常发生
+    stateHome: fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-eta-host-noinj-')),
   }
   assert.doesNotThrow(() => plugin.apply(ctx))
   // 注入行照旧注册（它不依赖 webServer）

@@ -728,6 +728,8 @@ test('恢复默认把缩放、壁纸、位置、折叠全部还原', async () =>
   assert.equal(ctx.widget.getAttribute('data-wallpaper'), '1')
 
   buttonOf(panel, '恢复默认').dispatch('click', CLICK)
+  // 恢复默认现在还会异步通知宿主（清显示位置与浮窗位置的记忆）—— 等它落地
+  await new Promise((resolve) => setImmediate(resolve))
 
   assert.equal(ctx.widget.style.transform, '')
   assert.equal(ctx.widget.getAttribute('data-wallpaper'), null)
@@ -735,6 +737,65 @@ test('恢复默认把缩放、壁纸、位置、折叠全部还原', async () =>
   const saved = JSON.parse(ctx.storage.get('dsh-eta-forecast:v1'))
   assert.equal(saved.zoom, 100)
   assert.equal(saved.collapsed, false)
+})
+
+/** 深搜面板里所有 dsh-eta-check 开关（垫片没有 querySelectorAll，自己走）。 */
+function checkTogglesOf(panel) {
+  const found = []
+  const walk = (node) => {
+    for (const child of node.children || []) {
+      if (child.tagName === 'INPUT' && child.className === 'dsh-eta-check') found.push(child)
+      walk(child)
+    }
+  }
+  walk(panel)
+  return found
+}
+
+test('设置面板有「记住我的设置」开关，默认开着', async () => {
+  const ctx = bootClient([
+    { ok: true, now: Date.now(), memory: true, sessions: [] },
+  ])
+  await new Promise((resolve) => setImmediate(resolve))
+  const panel = await openPanel(ctx)
+
+  const toggles = checkTogglesOf(panel)
+  assert.ok(toggles.length >= 2, 'menu-hidden + memory toggles, got ' + toggles.length)
+  const memoryToggle = toggles[toggles.length - 1]
+  assert.equal(memoryToggle.checked, true, 'memory must default to on')
+})
+
+test('关掉「记住我的设置」会通知宿主（POST memory:false，不带 display）', async () => {
+  const posts = []
+  const ctx = bootClient([{ ok: true, now: Date.now(), memory: true, sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  ctx.window.fetch = function (url, options) {
+    const u = String(url)
+    if (u.indexOf('/dsh-eta/config') !== -1 && options && options.method === 'POST') {
+      posts.push(JSON.parse(options.body))
+      return Promise.resolve({
+        ok: true, status: 200,
+        json: () => Promise.resolve({ ok: true, memory: false, display: 'both' }),
+      })
+    }
+    return Promise.resolve({
+      ok: true, status: 200,
+      json: () => Promise.resolve({ ok: true, now: Date.now(), memory: true, sessions: [] }),
+    })
+  }
+  const panel = await openPanel(ctx)
+
+  const memoryToggle = checkTogglesOf(panel).slice(-1)[0]
+  memoryToggle.checked = false
+  memoryToggle.dispatch('change')
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.equal(posts.length, 1, 'exactly one config POST, got ' + posts.length)
+  assert.equal(posts[0].memory, false)
+  assert.equal('display' in posts[0], false,
+    'turning memory off must not also change the display mode')
+  assert.equal(checkTogglesOf(panel).slice(-1)[0].checked, false,
+    'the toggle stays off after the host confirms')
 })
 
 test('点标题行上的按钮不会顺手把卡片拖走', async () => {

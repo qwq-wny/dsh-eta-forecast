@@ -44,6 +44,37 @@ const WIN_W = Number.parseInt(String(process.env.DSH_ETA_WIN_W || ''), 10) || 30
 const WIN_H = Number.parseInt(String(process.env.DSH_ETA_WIN_H || ''), 10) || 210
 const CROSS_ORIGIN = process.env.DSH_ETA_ALLOW_ORIGIN || ''
 
+/**
+ * 记忆模式：宿主传来的上一次窗口位置。
+ *
+ * 没存过（空串 / 坏 JSON / 字段缺失）就回退 null —— 那样窗口仍从默认右下角出现。
+ */
+const RESTORED_BOUNDS = (() => {
+  try {
+    const raw = String(process.env.DSH_ETA_WIN_BOUNDS || '')
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return null
+    const x = Number(parsed.x)
+    const y = Number(parsed.y)
+    const width = Number(parsed.width)
+    const height = Number(parsed.height)
+    if (![x, y, width, height].every((n) => Number.isFinite(n))) return null
+    return { x, y, width, height }
+  } catch (err) {
+    return null
+  }
+})()
+
+/** 把实际生效的窗口位置回报给宿主（记忆模式用它保存）。 */
+function reportBounds(bounds) {
+  try {
+    process.stdout.write('dsh-eta:bounds ' + JSON.stringify(bounds) + '\n')
+  } catch (err) {
+    /* 管道断了会让存活守卫处理 */
+  }
+}
+
 /** 宿主存活探测间隔：宿主没了最多 2s 收敛。 */
 const HOST_POLL_MS = 2000
 
@@ -112,14 +143,17 @@ function clampToWorkArea(x, y, w, h) {
 }
 
 function createWindow() {
-  // 初始位置：主屏右下角（与网页端一致的锚点）。
+  // 初始位置：记忆模式有存过就用上一次的位置；没存过才落主屏右下角。
+  // restore 之前仍要夹一次工作区 —— 上次的位置在这次可能被外接显示器拔掉了。
   const area = screen.getPrimaryDisplay().workArea
-  const start = clampToWorkArea(
-    area.x + area.width - WIN_W - 16,
-    area.y + area.height - WIN_H - 16,
-    WIN_W,
-    WIN_H,
-  )
+  const start = RESTORED_BOUNDS
+    ? clampToWorkArea(RESTORED_BOUNDS.x, RESTORED_BOUNDS.y, RESTORED_BOUNDS.width, RESTORED_BOUNDS.height)
+    : clampToWorkArea(
+      area.x + area.width - WIN_W - 16,
+      area.y + area.height - WIN_H - 16,
+      WIN_W,
+      WIN_H,
+    )
 
   win = new BrowserWindow({
     width: start.width,
@@ -183,6 +217,29 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, 'index.html'))
   win.on('closed', () => { win = null })
+
+  // 记忆模式：窗口**稳定后**的位置才回报 —— 拖动时 setBounds 一次一帧，
+  // 全部记下来既写爆盘也没意义。用防抖：最后一次变化 600ms 后仍没再动才报。
+  let reportTimer = null
+  const scheduleReport = () => {
+    if (reportTimer) clearTimeout(reportTimer)
+    reportTimer = setTimeout(() => {
+      reportTimer = null
+      if (!win || win.isDestroyed()) return
+      const b = win.getBounds()
+      reportBounds({ x: b.x, y: b.y, width: b.width, height: b.height })
+    }, 600)
+  }
+  win.on('move', scheduleReport)
+  win.on('resize', scheduleReport)
+  win.on('close', () => {
+    // 退出前补报一次：防抖窗口内的最后位置不能丢。
+    if (reportTimer) { clearTimeout(reportTimer); reportTimer = null }
+    if (win && !win.isDestroyed()) {
+      const b = win.getBounds()
+      reportBounds({ x: b.x, y: b.y, width: b.width, height: b.height })
+    }
+  })
 }
 
 /* ---------- IPC：渲染端 → 主进程 ---------- */

@@ -794,6 +794,21 @@
     whereRow.appendChild(whereLabel)
     whereRow.appendChild(whereSelect)
     whereGroup.appendChild(whereRow)
+
+    /* --- 记忆模式：上次的设置下次启动保留 --- */
+    var memoryRow = el('div', 'dsh-eta-row')
+    var memoryLabel = el('label', '', '记住我的设置')
+    memoryLabel.title = '开着：显示位置与桌面浮窗位置会记住，重启后原样恢复\n'
+      + '外观（缩放/壁纸等）始终存在浏览器里，与此开关无关'
+    var memoryToggle = el('input')
+    memoryToggle.type = 'checkbox'
+    memoryToggle.className = 'dsh-eta-check'
+    memoryToggle.addEventListener('change', function () {
+      setMemoryMode(memoryToggle.checked === true)
+    })
+    memoryRow.appendChild(memoryLabel)
+    memoryRow.appendChild(memoryToggle)
+    whereGroup.appendChild(memoryRow)
     var whereHint = el('div', 'dsh-eta-hint', '')
     whereHint.setAttribute('data-role', 'display-hint')
     whereGroup.appendChild(whereHint)
@@ -832,7 +847,7 @@
     panelNodes = {
       zoom: zoomRow, blur: blurRow, dim: dimRow, alpha: alphaRow,
       urlInput: urlInput, fileInput: fileInput, hint: hint, menuToggle: menuToggle,
-      whereSelect: whereSelect, whereHint: whereHint,
+      whereSelect: whereSelect, whereHint: whereHint, memoryToggle: memoryToggle,
     }
 
     close.addEventListener('click', function (event) {
@@ -931,12 +946,15 @@
     }
     if (panelNodes.menuToggle) panelNodes.menuToggle.checked = appearance.menuHidden === true
     if (panelNodes.whereSelect && displayMode) panelNodes.whereSelect.value = displayMode
+    if (panelNodes.memoryToggle) panelNodes.memoryToggle.checked = memoryOn === true
   }
 
   /* ---------- 显示位置（web / desktop / both / none） ---------- */
 
   /** 当前显示位置。'both' 是默认值，与宿主的默认一致。 */
   var displayMode = 'both'
+  /** 记忆模式：上次的设置下次启动保留（宿主级，默认开）。 */
+  var memoryOn = true
 
   /**
    * 拉一次配置并同步到设置面板。
@@ -954,6 +972,9 @@
         if (!payload || !payload.ok) return
         displayMode = String(payload.display || displayMode)
         if (panelNodes && panelNodes.whereSelect) panelNodes.whereSelect.value = displayMode
+        // 记忆模式开关的当前状态（默认开；老宿主不给这个字段就保持默认）
+        if (typeof payload.memory === 'boolean') memoryOn = payload.memory
+        if (panelNodes && panelNodes.memoryToggle) panelNodes.memoryToggle.checked = memoryOn
         if (panelNodes && panelNodes.whereHint) {
           var extra = payload.desktopRunning ? '（桌面浮窗运行中）' : ''
           if (payload.error) {
@@ -1021,6 +1042,42 @@
     return String(mode)
   }
 
+  /**
+   * 改记忆模式（宿主级）。
+   *
+   * POST 只带 memory、不带 display：宿主会沿用当前显示位置，只是开关「记不记」。
+   * 关掉的提示要说清楚后果 —— 外观仍在浏览器里，但显示位置与浮窗位置重启后归默认。
+   */
+  function setMemoryMode(next) {
+    var value = next === true
+    window.fetch(absoluteUrl(CONFIG_URL), {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ memory: value }),
+    })
+      .then(function (response) {
+        return response.json().then(function (payload) {
+          return { status: response.status, payload: payload }
+        })
+      })
+      .then(function (result) {
+        if (result.status === 200 && result.payload && result.payload.ok) {
+          if (typeof result.payload.memory === 'boolean') memoryOn = result.payload.memory
+          if (panelNodes && panelNodes.memoryToggle) {
+            panelNodes.memoryToggle.checked = memoryOn
+          }
+          setHint(memoryOn ? '会记住上次的设置' : '不再记忆：显示位置与浮窗位置重启后回默认', 'ok')
+          return
+        }
+        var message = (result.payload && result.payload.error) || ('HTTP ' + result.status)
+        setHint('改记忆设置失败：' + message, 'warn')
+      })
+      .catch(function (error) {
+        setHint('改记忆设置失败：' + (error && error.message ? error.message : String(error)), 'warn')
+      })
+  }
+
   /** 网页端本地应用显示位置（桌面窗口由宿主负责启停）。 */
   function applyLocalDisplayMode(mode) {
     if (IS_DESKTOP || !nodes) return
@@ -1065,7 +1122,28 @@
     applyAppearance()
     syncPanelValues()
     positionPanel()
-    setHint('已恢复默认外观', 'ok')
+    // 记忆模式下，宿主侧存的东西也一起清：显示位置回默认、浮窗位置丢掉。
+    // 「恢复默认」想的是「回到刚装上的样子」，只清浏览器这边不算数。
+    // 不动记忆开关本身 —— 用户对「记不记」的选择不属于外观默认值。
+    window.fetch(absoluteUrl(CONFIG_URL), {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ display: 'both' }),
+    })
+      .then(function (response) { return response.json() })
+      .then(function (payload) {
+        if (payload && payload.ok) {
+          displayMode = String(payload.display || 'both')
+          if (panelNodes && panelNodes.whereSelect) panelNodes.whereSelect.value = displayMode
+          setHint('已恢复默认（含显示位置与浮窗位置）', 'ok')
+        } else {
+          setHint('外观已恢复默认；显示位置没改成（宿主没应答）', 'warn')
+        }
+      })
+      .catch(function () {
+        setHint('外观已恢复默认；显示位置没改成（宿主没应答）', 'warn')
+      })
   }
 
   /* ---------- 图片处理 ---------- */
