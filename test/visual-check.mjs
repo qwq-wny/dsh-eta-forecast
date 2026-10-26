@@ -118,22 +118,19 @@ report.clockColorOnWallpaper = await page.locator('.dsh-eta-clock b').evaluate(
 // ---- 6. 「隐藏挂件」已删除；标题行只剩两个按钮 ----
 report.titleButtons = await page.locator('.dsh-eta-head .dsh-eta-btn:visible').count()
 report.noHideButton = report.titleButtons === 2 // 收起 + 齿轮
+report.noIntermediateMenu = await page.locator('#dsh-eta-ctxmenu').count() === 0
 
-// ---- 7. 右键轻点 = 菜单 ----
+// ---- 7. 右键轻点 = **直接打开设置面板**（不再有中间菜单） ----
 await widget.click({ button: 'right' })
-await page.waitForSelector('#dsh-eta-ctxmenu:not([data-hidden])', { timeout: 3000 })
-report.contextMenuVisible = await page.locator('#dsh-eta-ctxmenu').isVisible()
-report.contextMenuItems = await page.locator('#dsh-eta-ctxmenu .dsh-eta-ctxitem').allInnerTexts()
-report.menuHasNoHide = !(await page.locator('#dsh-eta-ctxmenu .dsh-eta-ctxitem').allInnerTexts()).includes('隐藏挂件')
-
-// 从菜单里开设置
-await page.locator('#dsh-eta-ctxmenu .dsh-eta-ctxitem', { hasText: '外观设置' }).click()
-await page.waitForTimeout(300)
-report.menuOpensPanel = await page.locator('#dsh-eta-panel').getAttribute('data-hidden') === null
+await page.waitForSelector('#dsh-eta-panel:not([data-hidden])', { timeout: 3000 })
+report.rightClickOpensPanel = await page.locator('#dsh-eta-panel').getAttribute('data-hidden') === null
+report.rightClickPanelHasReset = await page.locator('#dsh-eta-panel .dsh-eta-action', { hasText: '回到右下角' }).count() === 1
+await page.screenshot({ path: `${OUT}/6-rightclick-settings.png` })
+// 关掉面板，免得挡住后面的拖动
 await page.locator('#dsh-eta-panel .dsh-eta-btn').first().click()
 await page.waitForTimeout(200)
 
-// ---- 8. 右键按住拖动 = 移动卡片（这是本次新增的核心诉求） ----
+// ---- 8. 右键按住拖动 = 移动卡片（而不是打开面板） ----
 const posBefore = await widget.boundingBox()
 const box = posBefore
 // 在卡片中部按住右键，往左上拖 120px
@@ -146,8 +143,8 @@ await page.waitForTimeout(300)
 const posAfter = await widget.boundingBox()
 report.rightDragMovedCard = Math.abs(posAfter.x - posBefore.x) > 60 || Math.abs(posAfter.y - posBefore.y) > 60
 report.rightDragDelta = { dx: Math.round(posAfter.x - posBefore.x), dy: Math.round(posAfter.y - posBefore.y) }
-// 拖完不该弹菜单
-report.rightDragDidNotOpenMenu = await page.locator('#dsh-eta-ctxmenu').getAttribute('data-hidden') === '1'
+// 拖完不该打开面板（拖了就不是点击）
+report.rightDragDidNotOpenPanel = await page.locator('#dsh-eta-panel').getAttribute('data-hidden') === '1'
 
 // ---- 9. 整卡左键也能拖（不限于标题行） ----
 const posBeforeLeft = await widget.boundingBox()
@@ -163,8 +160,8 @@ await page.screenshot({ path: `${OUT}/5-drag-and-menu.png` })
 
 // ---- 10. 恢复默认 ----
 await widget.click({ button: 'right' })
-await page.waitForSelector('#dsh-eta-ctxmenu:not([data-hidden])')
-await page.locator('#dsh-eta-ctxmenu .dsh-eta-ctxitem', { hasText: '外观设置' }).click()
+await page.waitForSelector('#dsh-eta-panel:not([data-hidden])')
+await page.locator('#dsh-eta-panel .dsh-eta-action', { hasText: '恢复默认' }).click()
 await page.waitForTimeout(300)
 await page.locator('#dsh-eta-panel .dsh-eta-action', { hasText: '恢复默认' }).click()
 await page.waitForTimeout(400)

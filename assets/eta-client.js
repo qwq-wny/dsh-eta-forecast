@@ -25,7 +25,6 @@
   var STYLE_ID = 'dsh-eta-style'
   var ROOT_ID = 'dsh-eta-root'
   var PANEL_ID = 'dsh-eta-panel'
-  var CONTEXT_MENU_ID = 'dsh-eta-ctxmenu'
 
   /**
    * 当前跑在**桌面浮窗**里还是浏览器页面里？
@@ -310,21 +309,6 @@
     /* 小尺寸逃生门：透明、不挡内容，只是给「双击开设置」一个够大的落点。 */
     '.dsh-eta-hotspot{position:fixed;z-index:9997;background:transparent;cursor:pointer}',
 
-    /* 右键菜单：同样挂在 body 上，不跟着卡片缩放。 */
-    '#dsh-eta-ctxmenu{position:fixed;z-index:10000;min-width:112px;box-sizing:border-box;',
-    'padding:4px;border-radius:9px;',
-    'background:var(--dsw-alias-bg-layer-3,#fff);',
-    'border:.5px solid var(--dsw-alias-border-l4,rgba(127,127,127,.3));',
-    'box-shadow:0 10px 28px rgba(15,25,60,.2);',
-    'font-family:inherit;font-size:12px;line-height:1.4;',
-    'color:var(--dsw-alias-label-primary,#1f2430);',
-    'user-select:none;-webkit-user-select:none}',
-    '#dsh-eta-ctxmenu[data-hidden="1"]{display:none}',
-    '.dsh-eta-ctxitem{display:block;width:100%;box-sizing:border-box;padding:5px 9px;',
-    'border:0;border-radius:6px;background:transparent;color:inherit;',
-    'font:inherit;font-size:12px;text-align:left;cursor:pointer;white-space:nowrap}',
-    '.dsh-eta-ctxitem:hover{background:rgba(127,127,127,.16)}',
-
     /* 复选框跟着文字排，不撑高整行。 */
     '.dsh-eta-check{flex:none;width:14px;height:14px;margin:0;cursor:pointer;',
     'accent-color:var(--dsw-alias-brand-primary,#4f9dd9)}',
@@ -347,8 +331,6 @@
   var nodes = null
   var panel = null
   var panelNodes = null
-  var contextMenu = null
-  var contexts = null
   var current = null
   var timer = null
   var collapsed = false
@@ -740,12 +722,22 @@
     whereHint.setAttribute('data-role', 'display-hint')
     whereGroup.appendChild(whereHint)
 
-    /* --- 恢复默认 --- */
+    /* --- 恢复默认 / 回到右下角 --- */
     var resetGroup = el('div', 'dsh-eta-group')
     var resetRow = el('div', 'dsh-eta-actions')
+    // 「回到右下角」原来在右键菜单里。右键现在直接开设置面板（不再有中间菜单），
+    // 所以这个兜底动作要挪进来，不然位置拖丢就没救了。
+    var recenter = el('button', 'dsh-eta-action', '回到右下角')
+    recenter.type = 'button'
+    recenter.addEventListener('click', function (event) {
+      event.stopPropagation()
+      resetPosition()
+      setHint('已回到右下角', 'ok')
+    })
     var reset = el('button', 'dsh-eta-action', '恢复默认')
     reset.type = 'button'
     reset.setAttribute('data-danger', '1')
+    resetRow.appendChild(recenter)
     resetRow.appendChild(reset)
     resetGroup.appendChild(resetRow)
 
@@ -935,7 +927,6 @@
     else {
       nodes.root.setAttribute('data-display-off', '1')
       hidePanel()
-      hideContextMenu()
     }
   }
 
@@ -1058,97 +1049,49 @@
     nodes.hotspot.style.top = Math.round(rect.top + rect.height - size / 2) + 'px'
   }
 
-  /* ---------- 右键菜单（「隐藏菜单按钮」后的唯一入口） ---------- */
+  /* ---------- 右键 = 直接打开设置面板 ---------- */
 
   /**
-   * 右键唤出的小菜单。
+   * 右键不再是「弹一个小菜单再点一项」，而是**直接打开设置面板**。
    *
-   * 为什么用自绘而不是 `window` 上的原生菜单：这是页面里的挂件，没有原生菜单可用；
-   * 而且自绘才能跟着卡片的缩放/位置走，25% 时也不会跑出屏幕。
+   * 原因：那个中间菜单只有三项（收起 / 外观设置 / 回到右下角），而其中两项
+   * 都已经有更好的去处（收起有 `−` 按钮、回到右下角挪进了设置面板）。
+   * 多一层点击只增加摩擦 —— 右键的意图就是「我要调一下」。
    *
-   * 菜单挂在 body 上（和设置面板一样）—— 挂在 root 里会跟着 transform 一起缩，
+   * 面板挂在 body 上（和以前一样）—— 挂在 root 里会跟着 transform 一起缩，
    * 25% 时字只有 3px，点不中。
    */
-  function buildContextMenu() {
-    if (contextMenu) return contextMenu
-    var menu = el('div', 'dsh-eta-ctxmenu')
-    menu.id = CONTEXT_MENU_ID
-    menu.setAttribute('data-hidden', '1')
-
-    // 注意：这里没有「隐藏挂件」。那个功能已经按用户要求删掉了 ——
-    // 隐藏后只能靠双击热区找回，既难发现又容易把自己锁在外面；
-    // 现在想让它不碍事，收起（只剩标题行）或者直接拖到角落即可。
-    var items = [
-      { label: '收起 / 展开', run: function () { toggleCollapsed() } },
-      { label: '外观设置', run: function () { showPanel() } },
-      { label: '回到右下角', run: function () { resetPosition() } },
-    ]
-    contexts = items.map(function (item) {
-      var button = el('button', 'dsh-eta-ctxitem', item.label)
-      button.type = 'button'
-      button.addEventListener('click', function (event) {
-        event.stopPropagation()
-        hideContextMenu()
-        item.run()
-      })
-      menu.appendChild(button)
-      return { node: button, label: item.label }
-    })
-
-    document.body.appendChild(menu)
-    contextMenu = menu
-    return menu
-  }
-
-  function showContextMenu(clientX, clientY) {
-    var menu = buildContextMenu()
-    if (!menu) return
-    // 每打开一次就同步一次文案（收起/展开两个方向标签不同）。
-    if (contexts && contexts[0]) {
-      contexts[0].node.textContent = collapsed ? '展开' : '收起'
+  function openSettingsFromRightClick(clientX, clientY) {
+    showPanel()
+    // 面板默认贴着卡片摆。右键点在哪就把面板挪到那附近，手感更顺。
+    if (panel && typeof clientX === 'number' && typeof clientY === 'number') {
+      var rect = panel.getBoundingClientRect()
+      var pw = rect.width || 252
+      var ph = rect.height || 320
+      var left = Math.max(4, Math.min(window.innerWidth - pw - 4, clientX))
+      var top = Math.max(4, Math.min(window.innerHeight - ph - 4, clientY))
+      panel.style.left = Math.round(left) + 'px'
+      panel.style.top = Math.round(top) + 'px'
     }
-    menu.removeAttribute('data-hidden')
-    var rect = menu.getBoundingClientRect()
-    var width = rect.width || 120
-    var height = rect.height || 108
-    var left = Math.max(4, Math.min(window.innerWidth - width - 4, clientX))
-    var top = Math.max(4, Math.min(window.innerHeight - height - 4, clientY))
-    menu.style.left = Math.round(left) + 'px'
-    menu.style.top = Math.round(top) + 'px'
-  }
-
-  function hideContextMenu() {
-    if (!contextMenu) return
-    contextMenu.setAttribute('data-hidden', '1')
+    // 渲染壳要知道「现在有可交互元素」——桌面浮窗默认整窗穿透，
+    // 不变可交互的话面板根本点不动。
+    emitDesktop('dsh-eta-desktop-busy', true)
   }
 
   /**
-   * 右键菜单的「右键」入口。
+   * 右键入口。
    *
-   * 注意：真正的触发在拖动的 pointerup 里（右键原地松开 = 菜单），这里只负责
-   * 吞掉浏览器自带的上下文菜单，避免「拖动时弹出系统菜单」。
+   * 真正的触发在拖动的 pointerup 里（右键**原地**松开 = 开设置），
+   * 这里只负责吞掉浏览器自带的上下文菜单，避免拖动时弹出系统菜单。
    */
   function installContextMenu() {
     nodes.root.addEventListener('contextmenu', function (event) {
       event.preventDefault()
       event.stopPropagation()
     })
-    // 点别处 / 按 Esc 收起来。捕获阶段监听，免得被其它插件的 stopPropagation 吃掉。
-    document.addEventListener('pointerdown', function (event) {
-      if (!contextMenu || contextMenu.getAttribute('data-hidden') === '1') return
-      var target = event.target
-      if (target && contextMenu.contains && contextMenu.contains(target)) return
-      hideContextMenu()
-    }, true)
-    document.addEventListener('keydown', function (event) {
-      if (!event || event.key !== 'Escape') return
-      hideContextMenu()
-    }, true)
-    window.addEventListener('resize', hideContextMenu)
-    window.addEventListener('blur', hideContextMenu)
   }
 
-  /** 收起/展开，按钮与右键菜单共用同一份逻辑。 */
+  /** 收起/展开，按钮与设置面板共用同一份逻辑。 */
   function toggleCollapsed() {
     collapsed = !collapsed
     applyCollapsed()
@@ -1179,7 +1122,6 @@
     if (!nodes) return
     if (appearance.menuHidden) nodes.root.setAttribute('data-menu-hidden', '1')
     else nodes.root.removeAttribute('data-menu-hidden')
-    if (appearance.menuHidden) hideContextMenu()
   }
 
   /* ---------- 双击标题行也能开设置 ---------- */
@@ -1262,7 +1204,6 @@
         nodes.root.style.right = 'auto'
         nodes.root.style.bottom = 'auto'
       }
-      if (isRight) hideContextMenu()
       try { handle.setPointerCapture(event.pointerId) } catch (err) { /* 忽略 */ }
     })
 
@@ -1308,10 +1249,10 @@
         if (panel && panel.getAttribute('data-hidden') !== '1') positionPanel()
         return
       }
-      // 右键原地松开 = 唤出菜单（这是按钮藏起来后唯一的入口）。
+      // 右键原地松开 = **直接打开设置面板**（不再经过中间菜单）。
       // 判据是「按的是右键」+「没移动」，与事件类型无关 —— 不要依赖 event.type。
       if (wasRight && shouldOfferMenu) {
-        showContextMenu(event.clientX, event.clientY)
+        openSettingsFromRightClick(event.clientX, event.clientY)
       }
     }
 
@@ -1390,7 +1331,6 @@
     } else {
       nodes.root.setAttribute('data-display-off', '1')
       hidePanel()
-      hideContextMenu()
     }
   }
 
