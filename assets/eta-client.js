@@ -365,6 +365,18 @@
   var nodes = null
   var panel = null
   var panelNodes = null
+  /**
+   * 右键开面板时，那一次点击的坐标。
+   *
+   * 用途：右键开面板时，Chromium 会在 pointerup **之后**才派发 contextmenu，
+   * 而那时面板已经出现在光标下 —— 面板自己的「右键关闭」会接住**同一次**右键，
+   * 把它立刻关掉（表现成「右键没反应」）。所以要忽略「同一处」的后续 contextmenu。
+   *
+   * 用坐标判而不是时间窗，是因为时间窗会把「开完马上又想关」的合法快速右键
+   * 一起吞掉（实测浏览器校验里翻过车）。坐标在 2px 内才算同一次点击。
+   */
+  var panelOpenedAtX = null
+  var panelOpenedAtY = null
   var current = null
   var timer = null
   var collapsed = false
@@ -587,6 +599,8 @@
     if (!panel) return
     panel.removeAttribute('data-hidden')
     if (nodes.gear) nodes.gear.setAttribute('data-active', '1')
+    // 这里只负责「面板已显示」。抑制「同一次右键」的后续 contextmenu
+    // 由 toggleSettingsFromRightClick 做 —— 只有它拿得到这次点击的坐标。
     syncPanelValues()
     positionPanel()
     // 桌面窗口是独立的一小块，装不下面板就会被裁掉一半；面板是首次打开才创建的，
@@ -606,6 +620,10 @@
     if (nodes && nodes.gear) nodes.gear.removeAttribute('data-active')
     // 面板收起来了，窗口缩回「只放卡片」的大小 —— 没必要留在屏幕上占一块透明区域。
     emitDesktop('dsh-eta-desktop-fit', { open: false })
+    // 同时**必须解锁**：右键开面板时锁住了桌面浮窗的可交互状态（面板要点得动），
+    // 关掉却不解锁的话，渲染壳的 busy 会一直是 true，它的 mousemove 命中判定
+    // 从此不再更新 —— 表现为「用过一次设置面板之后，点击穿透永久失效」。
+    emitDesktop('dsh-eta-desktop-busy', false)
   }
 
   function positionPanel() {
@@ -819,6 +837,32 @@
 
     close.addEventListener('click', function (event) {
       event.stopPropagation()
+      hidePanel()
+    })
+
+    /**
+     * 面板上再右键 = 关掉面板。
+     *
+     * 和卡片上是同一个手势，就近即可：面板通常就盖在卡片上方，
+     * 用户右键时未必正好点在卡片上，所以两个入口都要给。
+     * 面板里没有拖动，不用担心和拖动冲突。
+     */
+    root.addEventListener('contextmenu', function (event) {
+      event.preventDefault()
+      event.stopPropagation()
+      // 刚被右键打开的面板，会立刻收到**同一次**右键的 contextmenu
+      // （Chromium 在 pointerup 之后才派 contextmenu，而那时面板已在光标下）。
+      // 只忽略「落点与打开时重合」的那一个；别的右键都是真实的「关掉」意图。
+      // 时间窗方案被否了：它会把「开完马上又想关」的合法快速右键一起吞掉。
+      var sameClick = panelOpenedAtX !== null
+        && typeof event.clientX === 'number'
+        && Math.abs(event.clientX - panelOpenedAtX) <= 2
+        && Math.abs(event.clientY - (panelOpenedAtY || 0)) <= 2
+      if (sameClick) {
+        panelOpenedAtX = null
+        panelOpenedAtY = null
+        return
+      }
       hidePanel()
     })
 
@@ -1107,20 +1151,32 @@
     nodes.hotspot.style.top = Math.round(rect.top + rect.height - size / 2) + 'px'
   }
 
-  /* ---------- 右键 = 直接打开设置面板 ---------- */
+  /* ---------- 右键 = 直接开关设置面板 ---------- */
 
   /**
-   * 右键不再是「弹一个小菜单再点一项」，而是**直接打开设置面板**。
+   * 右键不再是「弹一个小菜单再点一项」，而是**直接开关设置面板**。
    *
    * 原因：那个中间菜单只有三项（收起 / 外观设置 / 回到右下角），而其中两项
    * 都已经有更好的去处（收起有 `−` 按钮、回到右下角挪进了设置面板）。
    * 多一层点击只增加摩擦 —— 右键的意图就是「我要调一下」。
    *
+   * 面板**已经开着时再右键就关掉它**：同一个手势管开也管关，不必再去找那个 `×`，
+   * 也不用记「什么时候该点哪里」。（面板自己的右键也走这条路，见 buildPanel。）
+   *
    * 面板挂在 body 上（和以前一样）—— 挂在 root 里会跟着 transform 一起缩，
    * 25% 时字只有 3px，点不中。
    */
-  function openSettingsFromRightClick(clientX, clientY) {
+  function toggleSettingsFromRightClick(clientX, clientY) {
+    if (panel && panel.getAttribute('data-hidden') !== '1') {
+      hidePanel()
+      return
+    }
     showPanel()
+    // 记下「开面板的这次右键」的坐标：随后紧跟的那个 contextmenu（同一次点击）
+    // 若落点重合，就当它不存在 —— 否则一次右键会先开又立刻关。
+    // 坐标判而不是时间窗：时间窗会把「开完马上又想关」的合法快速右键一起吞掉。
+    panelOpenedAtX = typeof clientX === 'number' ? clientX : null
+    panelOpenedAtY = typeof clientY === 'number' ? clientY : null
     // 面板默认贴着卡片摆。右键点在哪就把面板挪到那附近，手感更顺。
     if (panel && typeof clientX === 'number' && typeof clientY === 'number') {
       var rect = panel.getBoundingClientRect()
@@ -1329,10 +1385,10 @@
         if (panel && panel.getAttribute('data-hidden') !== '1') positionPanel()
         return
       }
-      // 右键原地松开 = **直接打开设置面板**（不再经过中间菜单）。
+      // 右键原地松开 = **开关设置面板**（开着就关掉，不再经过中间菜单）。
       // 判据是「按的是右键」+「没移动」，与事件类型无关 —— 不要依赖 event.type。
       if (wasRight && shouldOfferMenu) {
-        openSettingsFromRightClick(event.clientX, event.clientY)
+        toggleSettingsFromRightClick(event.clientX, event.clientY)
       }
     }
 

@@ -157,15 +157,37 @@ report.titleButtons = await page.locator('.dsh-eta-head .dsh-eta-btn:visible').c
 report.noHideButton = report.titleButtons === 2 // 收起 + 齿轮
 report.noIntermediateMenu = await page.locator('#dsh-eta-ctxmenu').count() === 0
 
-// ---- 7. 右键轻点 = **直接打开设置面板**（不再有中间菜单） ----
+// ---- 7. 右键轻点 = **开关设置面板**（不再有中间菜单） ----
+// 前面的缩放/壁纸步骤把面板开着，而右键现在是「开关」——先归位到「关着」，
+// 否则第一次右键反而是关掉它（旧版脚本在这里会一直等不到面板出现）。
+if (await page.locator('#dsh-eta-panel:not([data-hidden])').count() > 0) {
+  await page.locator('#dsh-eta-panel .dsh-eta-btn').first().click()
+  await page.waitForTimeout(200)
+}
+
 await widget.click({ button: 'right' })
 await page.waitForSelector('#dsh-eta-panel:not([data-hidden])', { timeout: 3000 })
 report.rightClickOpensPanel = await page.locator('#dsh-eta-panel').getAttribute('data-hidden') === null
 report.rightClickPanelHasReset = await page.locator('#dsh-eta-panel .dsh-eta-action', { hasText: '回到右下角' }).count() === 1
 await page.screenshot({ path: `${OUT}/6-rightclick-settings.png` })
-// 关掉面板，免得挡住后面的拖动
-await page.locator('#dsh-eta-panel .dsh-eta-btn').first().click()
-await page.waitForTimeout(200)
+
+// 面板开着时再右键 = 关掉它（同一个手势管开也管关）
+await widget.click({ button: 'right' })
+await page.waitForTimeout(250)
+report.secondRightClickClosesPanel =
+  await page.locator('#dsh-eta-panel').getAttribute('data-hidden') === '1'
+
+// 再右键一次应当又能打开 —— 证明是可反复的开关，而不是"只能关一次"
+await widget.click({ button: 'right' })
+await page.waitForSelector('#dsh-eta-panel:not([data-hidden])', { timeout: 3000 })
+report.thirdRightClickReopens = await page.locator('#dsh-eta-panel').getAttribute('data-hidden') === null
+
+// 在面板上右键也能关掉
+await page.locator('#dsh-eta-panel').click({ button: 'right' })
+await page.waitForTimeout(250)
+report.rightClickOnPanelCloses =
+  await page.locator('#dsh-eta-panel').getAttribute('data-hidden') === '1'
+await page.waitForTimeout(150)
 
 // ---- 8. 右键按住拖动 = 移动卡片（而不是打开面板） ----
 const posBefore = await widget.boundingBox()

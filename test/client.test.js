@@ -803,6 +803,86 @@ test('右键原地轻点（不移动）打开设置面板', async () => {
   assert.equal(panel.getAttribute('data-hidden'), null, 'and show it')
 })
 
+/* ---------- 右键是「开关」，不是「只开」 ---------- */
+
+/** 模拟一次右键原地轻点（按下后不移动，直接松开）。 */
+function rightClickAt(ctx, node, x, y, pointerId) {
+  node.dispatch('pointerdown', { button: 2, clientX: x, clientY: y, pointerId })
+  node.dispatch('pointerup', { button: 2, clientX: x, clientY: y, pointerId })
+}
+
+test('面板已打开时再右键原地轻点 = 关掉面板', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+
+  rightClickAt(ctx, ctx.widget, 600, 600, 21)
+  const panel = ctx.doc.getElementById('dsh-eta-panel')
+  assert.equal(panel.getAttribute('data-hidden'), null, '第一次右键应当打开面板')
+
+  rightClickAt(ctx, ctx.widget, 600, 600, 22)
+  assert.equal(panel.getAttribute('data-hidden'), '1',
+    '面板开着时再右键应当把它关掉，而不是重复打开')
+})
+
+test('右键开 → 关 → 开，同一个手势可以反复用', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  rightClickAt(ctx, ctx.widget, 600, 600, 31)
+  const panel = ctx.doc.getElementById('dsh-eta-panel')
+
+  const states = []
+  for (let i = 0; i < 4; i++) {
+    rightClickAt(ctx, ctx.widget, 600, 600, 32 + i)
+    states.push(panel.getAttribute('data-hidden') === '1' ? 'hidden' : 'shown')
+  }
+  assert.deepEqual(states, ['hidden', 'shown', 'hidden', 'shown'],
+    '每次右键都应当翻转面板的显示状态')
+})
+
+test('面板开着时右键**拖动**卡片仍然是拖动，不会顺手把面板关掉', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  rightClickAt(ctx, ctx.widget, 600, 600, 41)
+  const panel = ctx.doc.getElementById('dsh-eta-panel')
+  assert.equal(panel.getAttribute('data-hidden'), null)
+  const baselineLeft = ctx.widget.style.left
+
+  ctx.widget.dispatch('pointerdown', { button: 2, clientX: 600, clientY: 600, pointerId: 42 })
+  ctx.widget.dispatch('pointermove', { clientX: 700, clientY: 660, pointerId: 42 })
+  ctx.widget.dispatch('pointerup', { button: 2, clientX: 700, clientY: 660, pointerId: 42 })
+
+  assert.notEqual(ctx.widget.style.left, baselineLeft, '移动了就是拖动')
+  assert.equal(panel.getAttribute('data-hidden'), null,
+    '拖动不该被当成"点一下"，面板应当还开着')
+})
+
+test('在面板上右键也能关掉面板（就近手势）', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  rightClickAt(ctx, ctx.widget, 600, 600, 51)
+  const panel = ctx.doc.getElementById('dsh-eta-panel')
+  assert.equal(panel.getAttribute('data-hidden'), null)
+
+  panel.dispatch('contextmenu', { preventDefault() {}, stopPropagation() {} })
+  assert.equal(panel.getAttribute('data-hidden'), '1',
+    '面板通常盖在卡片上方，用户在面板上右键也应当能关掉它')
+})
+
+test('桌面端：右键开面板会锁可交互，关掉后必须解锁（否则穿透永久失效）', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }], { desktop: true })
+  await new Promise((resolve) => setImmediate(resolve))
+
+  const busy = () => desktopEventsOf(ctx, 'dsh-eta-desktop-busy')
+
+  rightClickAt(ctx, ctx.widget, 600, 600, 61)
+  // 开面板这一下：拖动的 pointerup 先解锁，openSettings 再锁上（面板要点得动）
+  assert.equal(busy()[busy().length - 1], true, '面板打开时必须锁住可交互')
+
+  rightClickAt(ctx, ctx.widget, 600, 600, 62)
+  assert.equal(busy()[busy().length - 1], false,
+    '关掉面板后必须解锁 —— 否则渲染壳的 busy 永远是 true，点击穿透从此不再更新')
+})
+
 test('缩到很小时留一块能点开的逃生热区', async () => {
   const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
   await new Promise((resolve) => setImmediate(resolve))
