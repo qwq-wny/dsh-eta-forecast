@@ -1371,7 +1371,15 @@
 
     window.addEventListener('resize', function () {
       if (!nodes) return
-      if (IS_DESKTOP) return
+      if (IS_DESKTOP) {
+        // 桌面窗口的大小是渲染壳按「卡片 + 面板」调的（见 dsh-eta-desktop-fit），
+        // 而面板是**调尺寸之前**定位的。视口一变就得重新定位，否则面板还按
+        // 放大前的 innerHeight 摆着 —— 倒不至于被裁，但会停在靠下的位置，
+        // 和卡片挤在一起。卡片本身贴窗口右下，不需要夹取。
+        if (panel && panel.getAttribute('data-hidden') !== '1') positionPanel()
+        updateHotspot()
+        return
+      }
       if (!nodes.root.style.left) return
       var rect = nodes.root.getBoundingClientRect()
       var width = rect.width || nodes.root.offsetWidth

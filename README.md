@@ -190,11 +190,14 @@ lib/index.js        宿主半侧：订阅 session/event、注入页面、三个�
 lib/desktop.js      桌面窗口管理：找 Electron、拉起/关停 helper、崩溃退避重启
 assets/eta-client.js 浏览器半侧：每 2 秒拉一次快照，只负责画 + 外观
 runtime/electron-helper/  桌面浮窗（Electron 主进程 + 渲染页），复用同一份客户端脚本
+                     其中的 geometry.js 是拖拽/尺寸/命中判定的纯函数，单测覆盖
 test/forecast.test.js 20 个用例，全部在测「会算错的地方」
-test/client.test.js  37 个用例，用最小 DOM 垫片把客户端脚本真跑起来
+test/client.test.js  42 个用例，用最小 DOM 垫片把客户端脚本真跑起来
 test/host.test.js    16 个用例，路由/注入/写接口栅栏
 test/desktop.test.js  6 个用例，Electron 路径解析与「不静默下载」
+test/geometry.test.js 18 个用例，桌面浮窗的拖动/尺寸/命中算式
 test/visual-check.mjs 可选：真浏览器（Edge）跑 demo.html 并截图
+test/desktop-smoke.mjs 可选：真起一个 Electron 浮窗，用 CDP 连进去点开面板
 demo.html           外观预览页，不参与插件运行
 cordis.patch.yml    bundle 挂载声明
 ```
@@ -212,6 +215,19 @@ node --test "test/*.test.js"
 ```bash
 npm i -D playwright        # 一次性
 node test/visual-check.mjs # 截图落在 shots/
+```
+
+桌面浮窗另有一个**真机冒烟测试** `test/desktop-smoke.mjs`：它自建一个假宿主提供
+`state.json` / `eta.js`，真拉起 Electron，再用 CDP 连进渲染页去点齿轮开面板，
+断言窗口开得够大、开面板后能重算尺寸且**右下角不动**、面板在可交互区内、
+没有 CSP 拦截或加载失败。
+
+它很有必要：单元测试只能钉住 geometry 的算式，钉不住「Electron 里到底发生什么」——
+而窗口是透明的，出错时用户只看到「什么都没有」。这个测试第一次跑就抓到了
+「面板按放大前的视口定位」这个次序问题。
+
+```bash
+node test/desktop-smoke.mjs   # 需要 Electron 与一块真实显示器
 ```
 
 ## 已知边界

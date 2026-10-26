@@ -173,7 +173,8 @@ async function main() {
   }
 
   const initial = boundsFor(null)
-  trace('window size', { width: initial.width, height: initial.height })
+  // x/y 也报出来：冒烟测试要拿「下边缘」验证缩放时的锚定是否真的成立。
+  trace('window size', initial)
   const width = initial.width
   const height = initial.height
   const x = initial.x
