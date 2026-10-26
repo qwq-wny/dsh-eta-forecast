@@ -95,6 +95,17 @@ class FakeNode {
     if (selector === '[data-composer-input]') return { tag: 'composer' }
     return null
   }
+
+  /** 真实 DOM 有 contains；右键菜单要靠它判断「点的是不是菜单自己」。 */
+  contains(node) {
+    if (node === this) return true
+    const walk = (current) => {
+      if (!current) return false
+      if (current === node) return true
+      return current.children.some(walk)
+    }
+    return walk(this)
+  }
 }
 
 function makeDocument() {
@@ -667,4 +678,125 @@ test('隐藏挂件时热区一起消失', async () => {
   assert.equal(ctx.widget.getAttribute('data-hidden'), '1')
   assert.equal(ctx.doc.getElementById('dsh-eta-hotspot'), null,
     'a hidden widget must not leave an invisible click target behind')
+})
+
+/* ---------- 隐藏菜单按钮 + 右键菜单 ---------- */
+
+/** 在设置面板里找到「隐藏菜单按钮」那个 checkbox。 */
+function menuToggleOf(panel) {
+  return inputOf(panel, 'checkbox')
+}
+
+/** 右键卡片，返回随后弹出的菜单节点。 */
+function openContextMenu(ctx) {
+  const event = { clientX: 300, clientY: 300, preventDefault() {}, stopPropagation() {} }
+  ctx.widget.dispatch('contextmenu', event)
+  return ctx.doc.getElementById('dsh-eta-ctxmenu')
+}
+
+test('设置面板里有「隐藏菜单按钮」开关，默认关着', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const panel = await openPanel(ctx)
+
+  const toggle = menuToggleOf(panel)
+  assert.ok(toggle, 'the panel must offer a 隐藏菜单按钮 checkbox')
+  assert.equal(toggle.checked, false, 'defaults to off — new users need the buttons')
+  assert.equal(ctx.widget.getAttribute('data-menu-hidden'), null, 'buttons visible by default')
+})
+
+test('打开「隐藏菜单按钮」后按钮消失，并记住设置', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const panel = await openPanel(ctx)
+
+  const toggle = menuToggleOf(panel)
+  toggle.checked = true
+  toggle.dispatch('change')
+
+  assert.equal(ctx.widget.getAttribute('data-menu-hidden'), '1',
+    'turning the switch on must hide the title-row buttons')
+  const saved = JSON.parse(ctx.storage.get('dsh-eta-forecast:v1'))
+  assert.equal(saved.menuHidden, true)
+})
+
+test('设置从 localStorage 读回：上次关了按钮，重开页面还是关着', async () => {
+  const ctx = bootClient(
+    [{ ok: true, now: Date.now(), sessions: [] }],
+    { storage: { 'dsh-eta-forecast:v1': JSON.stringify({ menuHidden: true }) } },
+  )
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(ctx.widget.getAttribute('data-menu-hidden'), '1', 'menuHidden must survive a reload')
+})
+
+test('右键唤出菜单，三项操作都在', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+
+  const menu = openContextMenu(ctx)
+  assert.ok(menu, 'right-click must build the menu')
+  assert.equal(menu.getAttribute('data-hidden'), null, 'and show it')
+  assert.equal(menu.parentNode, ctx.doc.body, 'menu lives on body so it does not scale with the card')
+
+  const labels = menu.children.map((child) => child.textContent)
+  assert.ok(labels.some((l) => l.indexOf('收起') !== -1 || l.indexOf('展开') !== -1), 'has collapse toggle, got ' + labels)
+  assert.ok(labels.indexOf('外观设置') !== -1, 'has settings, got ' + labels)
+  assert.ok(labels.indexOf('隐藏挂件') !== -1, 'has hide, got ' + labels)
+})
+
+test('按钮隐藏后，右键菜单仍能收起、开设置、隐藏', async () => {
+  const ctx = bootClient(
+    [{ ok: true, now: Date.now(), sessions: [] }],
+    { storage: { 'dsh-eta-forecast:v1': JSON.stringify({ menuHidden: true }) } },
+  )
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(ctx.widget.getAttribute('data-menu-hidden'), '1')
+
+  // 收起
+  let menu = openContextMenu(ctx)
+  buttonOf(menu, '收起').dispatch('click', CLICK)
+  assert.ok(ctx.widget.classList.contains('dsh-eta-root-collapsed'), 'menu must collapse the card')
+  assert.equal(menu.getAttribute('data-hidden'), '1', 'menu closes after choosing an item')
+
+  // 再打开时标签应该变成「展开」
+  menu = openContextMenu(ctx)
+  assert.ok(buttonOf(menu, '展开'), 'label must flip to 展开 once collapsed')
+
+  // 设置
+  buttonOf(menu, '外观设置').dispatch('click', CLICK)
+  assert.equal(ctx.doc.getElementById('dsh-eta-panel').getAttribute('data-hidden'), null,
+    'menu must open the settings panel')
+
+  // 隐藏
+  menu = openContextMenu(ctx)
+  buttonOf(menu, '隐藏挂件').dispatch('click', CLICK)
+  assert.equal(ctx.widget.getAttribute('data-hidden'), '1', 'menu must hide the widget')
+})
+
+test('右键菜单点空白处就收起', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const menu = openContextMenu(ctx)
+  assert.equal(menu.getAttribute('data-hidden'), null)
+
+  // 点在菜单外面
+  const menuEvent = { target: { nodeName: 'DIV' } }
+  ctx.doc.dispatch('pointerdown', menuEvent)
+  assert.equal(menu.getAttribute('data-hidden'), '1', 'clicking outside must dismiss the menu')
+})
+
+test('恢复默认也把「隐藏菜单按钮」还原成显示状态', async () => {
+  const ctx = bootClient(
+    [{ ok: true, now: Date.now(), sessions: [] }],
+    { storage: { 'dsh-eta-forecast:v1': JSON.stringify({ menuHidden: true }) } },
+  )
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(ctx.widget.getAttribute('data-menu-hidden'), '1')
+
+  const panel = await openPanel(ctx)
+  buttonOf(panel, '恢复默认').dispatch('click', CLICK)
+
+  assert.equal(ctx.widget.getAttribute('data-menu-hidden'), null, 'reset must bring the buttons back')
+  const saved = JSON.parse(ctx.storage.get('dsh-eta-forecast:v1'))
+  assert.equal(saved.menuHidden, false)
 })

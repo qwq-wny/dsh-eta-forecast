@@ -115,11 +115,39 @@ report.clockColorOnWallpaper = await page.locator('.dsh-eta-clock b').evaluate(
   (el) => getComputedStyle(el).color,
 )
 
-// ---- 6. 恢复默认 ----
+// ---- 6. 「隐藏菜单按钮」：按钮真的消失、右键菜单真的能唤出 ----
+const beforeHide = await page.locator('.dsh-eta-head .dsh-eta-btn:visible').count()
+report.titleButtonsBeforeHide = beforeHide
+
+await page.locator('#dsh-eta-panel input[type="checkbox"]').check()
+await page.waitForTimeout(250)
+report.menuHiddenAttr = await widget.getAttribute('data-menu-hidden')
+report.titleButtonsAfterHide = await page.locator('.dsh-eta-head .dsh-eta-btn:visible').count()
+report.buttonsActuallyGone = report.titleButtonsAfterHide === 0
+
+// 关掉面板，否则它会盖住卡片
+await page.locator('#dsh-eta-panel .dsh-eta-btn').first().click()
+await page.waitForTimeout(200)
+
+// 右键唤出菜单
+await widget.click({ button: 'right' })
+await page.waitForSelector('#dsh-eta-ctxmenu:not([data-hidden])', { timeout: 3000 })
+report.contextMenuVisible = await page.locator('#dsh-eta-ctxmenu').isVisible()
+report.contextMenuItems = await page.locator('#dsh-eta-ctxmenu .dsh-eta-ctxitem').allInnerTexts()
+await page.screenshot({ path: `${OUT}/5-menu-hidden-rightclick.png` })
+
+// 从菜单里开设置 —— 这是按钮藏起来后唯一的入口
+await page.locator('#dsh-eta-ctxmenu .dsh-eta-ctxitem', { hasText: '外观设置' }).click()
+await page.waitForTimeout(300)
+report.menuOpensPanel = await page.locator('#dsh-eta-panel').getAttribute('data-hidden') === null
+
+// ---- 7. 恢复默认 ----
 await page.locator('#dsh-eta-panel .dsh-eta-action', { hasText: '恢复默认' }).click()
 await page.waitForTimeout(400)
 report.afterResetWallpaper = await widget.getAttribute('data-wallpaper')
 report.afterResetTransform = await widget.evaluate((el) => el.style.transform || '(none)')
+report.afterResetMenuHidden = await widget.getAttribute('data-menu-hidden')
+report.titleButtonsAfterReset = await page.locator('.dsh-eta-head .dsh-eta-btn:visible').count()
 await page.screenshot({ path: `${OUT}/4-after-reset.png` })
 
 report.pageErrors = errors
