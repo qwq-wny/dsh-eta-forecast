@@ -270,3 +270,66 @@ test('步数外推的置信度不会冒充「较准」', () => {
   assert.equal(snap.source, 'steps')
   assert.notEqual(snap.confidence, 'high', 'steps-only estimate must not claim high confidence')
 })
+
+/* ---------- 进度条：没有清单时也不能永远空着 ---------- */
+
+test('有清单时进度来自清单，来源标记为 todos', () => {
+  const state = startedSession()
+  writeTodos(state, [
+    { content: 'a', status: 'completed' },
+    { content: 'b', status: 'completed' },
+    { content: 'c', status: 'pending' },
+    { content: 'd', status: 'pending' },
+  ], T0 + 1000)
+  const snap = forecastSession(state, T0 + 60_000)
+  assert.equal(snap.progress, 0.5)
+  assert.equal(snap.progressSource, 'todos')
+})
+
+test('没有清单时进度用步数代理，不再是 null（这就是那根空灰条的成因）', () => {
+  const state = startedSession()
+  // 一条 todo 都没写，但走了 8 步
+  const now = feedSteps(state, 8, T0 + 1000, 5000)
+  const snap = forecastSession(state, now + 500)
+  assert.equal(snap.total, 0, 'no todo list')
+  assert.notEqual(snap.progress, null, 'progress must not stay null when steps are flowing')
+  assert.equal(snap.progressSource, 'steps')
+  assert.ok(snap.progress > 0 && snap.progress <= 0.95, 'progress in (0, 0.95], got ' + snap.progress)
+})
+
+test('步数代理的进度用历史「通常几步」当分母', () => {
+  const state = startedSession()
+  state.stepHistory.push(20, 20, 20) // 一轮通常 20 步
+  const now = feedSteps(state, 10, T0 + 1000, 4000)
+  const snap = forecastSession(state, now + 500)
+  assert.equal(snap.progressSource, 'steps')
+  // 10/20 = 0.5
+  assert.ok(Math.abs(snap.progress - 0.5) < 0.06, 'expected ~0.5, got ' + snap.progress)
+})
+
+test('步数代理的进度不会满格（走超了也留余地）', () => {
+  const state = startedSession()
+  state.stepHistory.push(10, 10, 10) // 通常 10 步
+  const now = feedSteps(state, 40, T0 + 1000, 1000) // 已经走了 40 步
+  const snap = forecastSession(state, now + 500)
+  assert.equal(snap.progressSource, 'steps')
+  assert.ok(snap.progress <= 0.95,
+    'progress must cap below 100% — a full bar looks finished, got ' + snap.progress)
+})
+
+test('刚开始（步数样本不足）时进度仍为 null，让前端隐藏进度条', () => {
+  const state = startedSession()
+  const now = feedSteps(state, 1, T0 + 1000, 5000)
+  const snap = forecastSession(state, now + 500)
+  assert.equal(snap.progress, null, 'one step is not enough to claim progress')
+  assert.equal(snap.progressSource, 'none')
+})
+
+test('已结束的轮次不把步数代理当进度（它已经 100% 了）', () => {
+  const state = startedSession()
+  feedSteps(state, 5, T0 + 1000, 2000)
+  observeEvent(state, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }, T0 + 30_000)
+  const snap = forecastSession(state, T0 + 31_000)
+  assert.equal(snap.phase, 'done')
+  assert.equal(snap.progressSource, 'none', 'a finished turn has no partial progress')
+})

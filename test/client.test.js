@@ -364,6 +364,76 @@ test('已完成快照显示「已完成」与上一轮用时', async () => {
   assert.ok(textOf(ctx.widget, 'dsh-eta-sub').indexOf('上一轮用时') !== -1)
 })
 
+/* ---------- 进度条：该显示时显示、该藏时藏 ---------- */
+
+/** 取进度条节点。 */
+function barOf(ctx) {
+  return nodeOf(ctx.widget, 'dsh-eta-bar')
+}
+
+test('有进度时进度条显示并填到对应比例', async () => {
+  const now = Date.now()
+  const ctx = bootClient([{
+    ok: true,
+    now,
+    sessions: [{
+      id: 's1', title: '', phase: 'running', elapsedMs: 60_000,
+      remainMs: 60_000, etaAt: now + 60_000, confidence: 'medium', source: 'progress',
+      progress: 0.57, progressSource: 'todos', total: 7, completed: 4, inProgress: 0, pending: 3,
+      currentTask: '', steps: 11, paused: false, pausedMs: 0, updatedAt: now,
+    }],
+  }])
+  await new Promise((resolve) => setImmediate(resolve))
+
+  const bar = barOf(ctx)
+  assert.equal(bar.getAttribute('data-on'), '1', 'bar must be visible when progress exists')
+  assert.equal(bar.getAttribute('data-source'), 'todos')
+  assert.equal(nodeOf(ctx.widget, 'dsh-eta-fill').style.width, '57.0%')
+})
+
+test('没有进度时整条隐藏（不留永远填不满的灰条）', async () => {
+  const now = Date.now()
+  const ctx = bootClient([{
+    ok: true,
+    now,
+    sessions: [{
+      id: 's1', title: '', phase: 'running', elapsedMs: 5000,
+      remainMs: null, etaAt: null, confidence: 'none', source: 'none',
+      progress: null, progressSource: 'none', total: 0, completed: 0, inProgress: 0, pending: 0,
+      currentTask: '', steps: 1, paused: false, pausedMs: 0, updatedAt: now,
+    }],
+  }])
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(barOf(ctx).getAttribute('data-on'), '0',
+    'a progress bar with nothing to show must be hidden, not left as an empty grey strip')
+})
+
+test('步数代理的进度标注来源，不冒充清单进度', async () => {
+  const now = Date.now()
+  const ctx = bootClient([{
+    ok: true,
+    now,
+    sessions: [{
+      id: 's1', title: '', phase: 'running', elapsedMs: 60_000,
+      remainMs: 60_000, etaAt: now + 60_000, confidence: 'low', source: 'steps',
+      progress: 0.33, progressSource: 'steps', total: 0, completed: 0, inProgress: 0, pending: 0,
+      currentTask: '', steps: 8, paused: false, pausedMs: 0, updatedAt: now,
+    }],
+  }])
+  await new Promise((resolve) => setImmediate(resolve))
+
+  const bar = barOf(ctx)
+  assert.equal(bar.getAttribute('data-on'), '1')
+  assert.equal(bar.getAttribute('data-source'), 'steps', 'steps-derived progress must be marked as such')
+  assert.ok(bar.title.indexOf('步数') !== -1, 'tooltip should say it is a step estimate, got ' + bar.title)
+})
+
+test('空闲（没有会话）时进度条也隐藏', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(barOf(ctx).getAttribute('data-on'), '0')
+})
+
 test('收起按钮切换状态并写进 localStorage', async () => {
   const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
   await new Promise((resolve) => setImmediate(resolve))

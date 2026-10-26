@@ -270,8 +270,16 @@
     'color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.95))}',
     '.dsh-eta-bar{position:relative;height:5px;margin-top:9px;border-radius:99px;',
     'background:rgba(127,127,127,.22);overflow:hidden}',
+    // data-on=0：这一轮还没有可算的进度（刚开始 / 没有清单也没有步数样本）——
+    // 整条收起。留一条永远填不满的灰条，用户只会以为"进度条坏了"。
+    '.dsh-eta-bar[data-on="0"]{display:none}',
     '.dsh-eta-fill{position:absolute;left:0;top:0;height:100%;width:0;border-radius:99px;',
     'background:var(--dsw-alias-brand-primary,#4f9dd9);transition:width .45s ease}',
+    // 步数代理的进度：用斜纹区分，避免让人以为这是"真正的清单进度"。
+    '.dsh-eta-bar[data-source="steps"] .dsh-eta-fill{',
+    'background:repeating-linear-gradient(45deg,',
+    'var(--dsw-alias-brand-primary,#4f9dd9) 0 5px,',
+    'rgba(255,255,255,.35) 5px 10px)}',
     '.dsh-eta-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;',
     'font-size:11px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.9))}',
     '.dsh-eta-task{margin-top:7px;font-size:11.5px;line-height:1.4;',
@@ -445,7 +453,7 @@
 
     nodes = {
       root: root, title: title, toggle: toggle, gear: gear, body: body,
-      clockBig: clockBig, clockUnit: clockUnit, sub: sub, fill: fill,
+      clockBig: clockBig, clockUnit: clockUnit, sub: sub, fill: fill, bar: bar,
       footLeft: footLeft, badge: badge, task: task, pause: pause,
       bg: bg, dim: dim, wash: wash, switcher: switcher,
     }
@@ -1477,6 +1485,10 @@
       nodes.clockUnit.textContent = ''
       nodes.sub.textContent = '还没有进行中的对话'
       nodes.fill.style.width = '0%'
+      // 没有会话时也没进度可显示，整条收起。
+      nodes.bar.setAttribute('data-on', '0')
+      nodes.bar.removeAttribute('data-source')
+      nodes.bar.removeAttribute('title')
       nodes.footLeft.textContent = ''
       nodes.badge.textContent = '空闲'
       nodes.badge.setAttribute('data-confidence', 'none')
@@ -1496,7 +1508,11 @@
         : snapshot.endReason === 'aborted' ? '（被中断）'
           : snapshot.endReason === 'max-tokens' ? '（输出截断）' : ''
       nodes.sub.textContent = '上一轮用时 ' + durationOf(snapshot.elapsedMs) + reasonText
+      // 已结束的轮次进度就是满的。
       nodes.fill.style.width = '100%'
+      nodes.bar.setAttribute('data-on', '1')
+      nodes.bar.removeAttribute('data-source')
+      nodes.bar.title = '这一轮已经结束'
       nodes.footLeft.textContent = clockOf(endedAt) ? clockOf(endedAt) + ' 结束' : ''
       nodes.badge.textContent = '空闲'
       nodes.badge.setAttribute('data-confidence', 'none')
@@ -1515,8 +1531,25 @@
       nodes.sub.textContent = '已跑 ' + durationOf(snapshot.elapsedMs)
     }
 
-    var progress = typeof snapshot.progress === 'number' && isFinite(snapshot.progress) ? snapshot.progress : 0
-    nodes.fill.style.width = Math.max(0, Math.min(100, progress * 100)).toFixed(1) + '%'
+    // 进度条：有清单就用清单完成度，没有清单用步数代理（见 lib/forecast.js 的 progressOf）。
+    // 两者都没有（刚开始、还没步数样本）时隐藏整条 —— 一条永远填不满的空灰条
+    // 比没有更糟，用户会以为「进度条坏了」。
+    var hasProgress = typeof snapshot.progress === 'number' && isFinite(snapshot.progress)
+    if (hasProgress) {
+      var pct = Math.max(0, Math.min(100, snapshot.progress * 100))
+      nodes.fill.style.width = pct.toFixed(1) + '%'
+      nodes.bar.setAttribute('data-on', '1')
+      // 步数代理的进度不是真进度，标一下来源，别让它冒充清单进度。
+      nodes.bar.setAttribute('data-source', snapshot.progressSource === 'steps' ? 'steps' : 'todos')
+      nodes.bar.title = snapshot.progressSource === 'steps'
+        ? '按已走步数估算的进度（这一轮没有 todo 清单）'
+        : '按 todo 清单估算的进度'
+    } else {
+      nodes.fill.style.width = '0%'
+      nodes.bar.setAttribute('data-on', '0')
+      nodes.bar.removeAttribute('data-source')
+      nodes.bar.removeAttribute('title')
+    }
 
     if (snapshot.total > 0) {
       nodes.footLeft.textContent = snapshot.completed + '/' + snapshot.total + ' 项'
