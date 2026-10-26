@@ -46,7 +46,8 @@
     <b>设置：</b>点标题行的 <code>⚙</code>、双击标题文字、或<b>右键原地轻点</b>，都直接打开设置面板。<br>
     <b>拖动：</b>整张卡片都能拖 —— <b>左键按住</b>或<b>右键按住</b>都可以。<br>
     <b>区别：</b>右键按下后<b>移动</b>就是拖动，<b>原地松开</b>才打开设置。<br>
-    <b>会话切换：</b>点第 ⑤ 个按钮切到多会话，卡片左上方会多出一排胶囊，点它换会话。<br>
+    <b>进度条：</b>有 todo 清单时实心填（真进度）；只有步数时走<b>斜纹</b>（估算进度）；两样都没有时整条隐藏。<br>
+    <b>会话切换：</b>点第 ⑥ 个按钮切到多会话，卡片左上方会多出一排胶囊，点它换会话。<br>
     公式全部在宿主侧 <code>lib/forecast.js</code>，这一页只是复用了渲染代码。
   </p>
 </div>
@@ -65,40 +66,58 @@
         id: 'demo-1', title: '重构估算核心', phase: 'running',
         elapsedMs: 8 * MIN, remainMs: 6 * MIN, etaAt: now + 6 * MIN,
         confidence: 'medium', source: 'progress',
-        progress: 0.57, total: 7, completed: 4, inProgress: 0, pending: 3,
+        progress: 0.57, progressSource: 'todos',
+        total: 7, completed: 4, inProgress: 0, pending: 3,
         currentTask: '把挂起时长从工期里扣掉', steps: 11,
         paused: false, pausedMs: 0, updatedAt: now,
       },
     },
+    steps: {
+      label: '② 无清单 · 步数代理进度',
+      snap: {
+        id: 'demo-steps', title: '调桌面浮窗点击穿透', phase: 'running',
+        elapsedMs: 5 * MIN, remainMs: 7 * MIN, etaAt: now + 7 * MIN,
+        confidence: 'low', source: 'steps',
+        // 没有 todo 清单：进度来自步数代理，斜纹 + 标注来源
+        progress: 0.42, progressSource: 'steps',
+        total: 0, completed: 0, inProgress: 0, pending: 0,
+        currentTask: '', steps: 42,
+        paused: false, pausedMs: 0, updatedAt: now,
+      },
+    },
     nosample: {
-      label: '② 刚开始 · 样本不足',
+      label: '③ 刚开始 · 进度条隐藏',
       snap: {
         id: 'demo-2', title: '给插件写文档', phase: 'running',
         elapsedMs: 23 * 1000, remainMs: null, etaAt: null,
         confidence: 'none', source: 'none',
-        progress: 0, total: 0, completed: 0, inProgress: 0, pending: 0,
+        // 还没有可算的进度 → 整条进度条收起（不是留一条空灰条）
+        progress: null, progressSource: 'none',
+        total: 0, completed: 0, inProgress: 0, pending: 0,
         currentTask: '', steps: 1,
         paused: false, pausedMs: 0, updatedAt: now,
       },
     },
     paused: {
-      label: '③ 等你授权 · 不计工期',
+      label: '④ 等你授权 · 不计工期',
       snap: {
         id: 'demo-3', title: '装到 desktop profile', phase: 'running',
         elapsedMs: 2 * MIN, remainMs: 3 * MIN, etaAt: now + 3 * MIN,
         confidence: 'low', source: 'unit',
-        progress: 0.33, total: 3, completed: 1, inProgress: 0, pending: 2,
+        progress: 0.33, progressSource: 'todos',
+        total: 3, completed: 1, inProgress: 0, pending: 2,
         currentTask: '等你确认安装方式', steps: 5,
         paused: true, pausedMs: 41 * 1000, updatedAt: now,
       },
     },
     done: {
-      label: '④ 上一轮已完成',
+      label: '⑤ 上一轮已完成',
       snap: {
-        id: 'demo-4', title: '跑通 31 个测试', phase: 'done', endReason: 'completed',
+        id: 'demo-4', title: '跑通全部测试', phase: 'done', endReason: 'completed',
         elapsedMs: 11 * MIN + 20 * 1000, remainMs: null, etaAt: null,
         confidence: 'none', source: 'none',
-        progress: 1, total: 5, completed: 5, inProgress: 0, pending: 0,
+        progress: 1, progressSource: 'todos',
+        total: 5, completed: 5, inProgress: 0, pending: 0,
         currentTask: '', steps: 19,
         paused: false, pausedMs: 0, updatedAt: now,
       },
@@ -166,7 +185,7 @@
   // 多会话开关：用来预览会话切换胶囊
   var multiBtn = document.createElement('button')
   multiBtn.type = 'button'
-  multiBtn.textContent = '⑤ 多会话切换'
+  multiBtn.textContent = '⑥ 多会话切换'
   multiBtn.setAttribute('data-on', '0')
   multiBtn.addEventListener('click', function () {
     multi = !multi

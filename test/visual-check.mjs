@@ -142,6 +142,16 @@ report.clockColorOnWallpaper = await page.locator('.dsh-eta-clock b').evaluate(
   (el) => getComputedStyle(el).color,
 )
 
+// ---- 5b. 进度条：有进度时显示并填充，没进度时整条隐藏 ----
+report.progressBarVisibleWithProgress =
+  await page.locator('.dsh-eta-bar').getAttribute('data-on') === '1'
+report.progressBarSource = await page.locator('.dsh-eta-bar').getAttribute('data-source')
+report.progressFillWidth = await page.locator('.dsh-eta-fill').evaluate((el) => el.style.width)
+report.progressBarActuallyPainted = await page.locator('.dsh-eta-fill').evaluate((el) => {
+  const r = el.getBoundingClientRect()
+  return { w: Math.round(r.width), h: Math.round(r.height) }
+})
+
 // ---- 6. 「隐藏挂件」已删除；标题行只剩两个按钮 ----
 report.titleButtons = await page.locator('.dsh-eta-head .dsh-eta-btn:visible').count()
 report.noHideButton = report.titleButtons === 2 // 收起 + 齿轮
