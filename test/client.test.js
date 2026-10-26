@@ -963,8 +963,9 @@ test('缩到很小时留一块能点开的逃生热区', async () => {
   assert.equal(spot.style.width, '44px', 'hotspot must stay a comfortable size regardless of zoom')
 
   // 双击热区能把面板叫回来（哪怕面板已经被关掉）
-  const close = ctx.doc.getElementById('dsh-eta-panel').children[0].children[1]
-  close.dispatch('click', CLICK)
+  // 关闭按钮按 title 找 —— 版本号徽章插进标题行后，children 下标不再可靠
+  const closeBtn = panel.children[0].children.find((n) => n.title === '关闭')
+  closeBtn.dispatch('click', CLICK)
   assert.equal(ctx.doc.getElementById('dsh-eta-panel').getAttribute('data-hidden'), '1')
   spot.dispatch('dblclick', CLICK)
   assert.equal(ctx.doc.getElementById('dsh-eta-panel').getAttribute('data-hidden'), null,

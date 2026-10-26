@@ -271,6 +271,103 @@ test('步数外推的置信度不会冒充「较准」', () => {
   assert.notEqual(snap.confidence, 'high', 'steps-only estimate must not claim high confidence')
 })
 
+/* ---------- 超时：超过预测之后不再演倒计时，并把误差学回来 ---------- */
+
+test('跑过预测终点（含宽容期）后标记超时，remainMs 归空', () => {
+  const state = startedSession()
+  state.stepHistory.push(20, 20, 20) // 一轮通常 20 步
+  // 先拿一次预测（锚定 turnFirstPredictedMs）
+  const t1 = feedSteps(state, 6, T0 + 1000, 3000)
+  const first = forecastSession(state, t1 + 500)
+  assert.ok(first.remainMs > 0, 'sanity: an early forecast exists')
+  assert.equal(first.overtime, false, 'not overtime yet')
+
+  // 一路走到远超「预测的总时长」（预测 ≈ 20-6=14 步 × 3s ≈ 42s）+ 90s 宽容期
+  const late = feedSteps(state, 8, t1 + 2000, 60_000) // 每步 60 秒：迅速越过预测
+  const snap = forecastSession(state, late + 1000)
+  assert.equal(snap.overtime, true, 'must be flagged overtime past the anchor + grace')
+  assert.equal(snap.remainMs, null, 'overtime must stop pretending a countdown')
+  assert.equal(snap.etaAt, null)
+  assert.ok(snap.overtimeMs > 0, 'overtimeMs should measure how far past the deadline')
+})
+
+test('宽容期内不闪「超时」', () => {
+  const state = startedSession()
+  state.stepHistory.push(20, 20, 20)
+  const t1 = feedSteps(state, 6, T0 + 1000, 3000)
+  forecastSession(state, t1 + 500) // 锚定预测
+  // 略微超出（预测 ~42s + 宽容 90s = 132s；现在只跑到 ~60s）
+  const t2 = feedSteps(state, 2, t1 + 2000, 15_000)
+  const snap = forecastSession(state, t2 + 1000)
+  assert.equal(snap.overtime, false, 'within the grace window must not flash overtime')
+})
+
+test('超时过的会话会把「超出比例」学进下一轮（估计变保守）', () => {
+  const state = startedSession()
+  state.stepHistory.push(20, 20, 20)
+  // 第一轮：预测 14 步 × 3s ≈ 42s，实际跑 ~3 分钟（超时 4 倍多）
+  const t1 = feedSteps(state, 6, T0 + 1000, 3000)
+  forecastSession(state, t1 + 500)
+  const end1 = feedSteps(state, 8, t1 + 2000, 60_000)
+  observeEvent(state, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }, end1 + 1000)
+  assert.ok(state.overtimeHistory.length > 0, 'an overtime turn must be learned')
+  assert.ok(state.overtimeHistory[0] > 1, 'the ratio must be meaningful')
+
+  // 第二轮：同样的步数节奏，预测应当比「没超时过的会话」更长
+  observeEvent(state, { type: 'turn/start', data: { turn: 2 } }, end1 + 5000)
+  state.stepHistory.push(20, 20, 20)
+  const t2 = feedSteps(state, 6, end1 + 6000, 3000)
+  const learned = forecastSession(state, t2 + 500)
+
+  const naive = startedSession()
+  naive.stepHistory.push(20, 20, 20)
+  const t3 = feedSteps(naive, 6, T0 + 1000, 3000)
+  const notLearned = forecastSession(naive, t3 + 500)
+
+  assert.ok(learned.remainMs > notLearned.remainMs,
+    'a session that overtime-ed before must now estimate longer: '
+    + learned.remainMs + ' vs ' + notLearned.remainMs)
+})
+
+test('没超时的轮次不记超时样本（预测基本准时就不放大）', () => {
+  const state = startedSession()
+  state.stepHistory.push(20, 20, 20)
+  const t1 = feedSteps(state, 6, T0 + 1000, 3000)
+  forecastSession(state, t1 + 500)
+  // 实际用时 ≈ 预测（42s 内收尾）
+  const end = feedSteps(state, 14, t1 + 2000, 2800)
+  observeEvent(state, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }, end + 500)
+  assert.equal(state.overtimeHistory.length, 0,
+    'an on-time turn must not poison the overtime history')
+})
+
+test('被中断/出错的轮次不进超时历史（预测锚点不可信）', () => {
+  const state = startedSession()
+  state.stepHistory.push(20, 20, 20)
+  const t1 = feedSteps(state, 6, T0 + 1000, 3000)
+  forecastSession(state, t1 + 500)
+  const end = feedSteps(state, 4, t1 + 2000, 60_000)
+  observeEvent(state, { type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted' } } }, end + 1000)
+  assert.equal(state.overtimeHistory.length, 0,
+    'an aborted turn says nothing about prediction quality')
+})
+
+test('放大量有上限（离谱的超时记录不会把估计放大到失控）', () => {
+  const state = startedSession()
+  // 直接塞满极端超时记录
+  for (let i = 0; i < 8; i++) state.overtimeHistory.push(50) // 超出 50 倍
+  state.stepHistory.push(20, 20, 20)
+  const now = feedSteps(state, 6, T0 + 1000, 3000)
+  const snap = forecastSession(state, now + 500)
+  const naive = startedSession()
+  naive.stepHistory.push(20, 20, 20)
+  const now2 = feedSteps(naive, 6, T0 + 1000, 3000)
+  const naiveSnap = forecastSession(naive, now2 + 500)
+  assert.ok(snap.remainMs <= naiveSnap.remainMs * 1.6 + 1,
+    'the amplification must cap at OVERTIME_MARGIN_MAX, got '
+    + snap.remainMs + ' vs ' + naiveSnap.remainMs)
+})
+
 /* ---------- 进度条：没有清单时也不能永远空着 ---------- */
 
 test('有清单时进度来自清单，来源标记为 todos', () => {

@@ -15,7 +15,10 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import plugin from '../lib/index.js'
+
+const HERE = path.dirname(fileURLToPath(import.meta.url))
 
 /** 造一个够用的假宿主 ctx。 */
 function fakeHost(options) {
@@ -389,7 +392,7 @@ test('注入行是内联 script（不是 script-src），且重复 emit 不重�
   host.teardown()
 })
 
-test('客户端脚本路由返回 JS 且非空', () => {
+test('客户端脚本路由返回 JS 且非空，且**版本号已注入**', () => {
   const host = fakeHost()
   plugin.apply(host.ctx)
   const out = callRoute(host, '/dsh-eta/eta.js')
@@ -397,6 +400,21 @@ test('客户端脚本路由返回 JS 且非空', () => {
   assert.match(out.headers['Content-Type'], /javascript/)
   assert.ok(out.body.length > 1000, 'client bundle should be non-trivial')
   assert.ok(out.body.indexOf('__dshEtaForecast') !== -1)
+  // 版本占位符必须被替换掉 —— 没替换的话面板会显示 'dev'，用户不知道真实版本
+  assert.equal(out.body.indexOf('__DSH_ETA_VERSION__'), -1,
+    'version placeholder must be replaced with the package.json version')
+  const pkg = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'package.json'), 'utf8'))
+  assert.ok(out.body.indexOf(pkg.version) !== -1,
+    'the served script must contain the package version ' + pkg.version)
+  host.teardown()
+})
+
+test('state.json 带上插件版本（排查问题时与面板显示对得上）', async () => {
+  const host = fakeHost()
+  plugin.apply(host.ctx)
+  const payload = JSON.parse(callRoute(host, '/dsh-eta/state.json').body)
+  const pkg = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'package.json'), 'utf8'))
+  assert.equal(payload.version, pkg.version)
   host.teardown()
 })
 

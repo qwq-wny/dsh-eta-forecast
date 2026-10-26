@@ -25,6 +25,13 @@
   var STYLE_ID = 'dsh-eta-style'
   var ROOT_ID = 'dsh-eta-root'
   var PANEL_ID = 'dsh-eta-panel'
+  /**
+   * 插件版本号 —— 由宿主在**下发这份脚本时**把占位符替换成 package.json 的
+   * version（见 lib/index.js 的 loadClientJs）。客户端自己读不到 package.json
+   * （浏览器里没有文件系统），这是唯一可靠的注入途径。
+   * 万一宿主是老版本没做替换，回退成 'dev'，总比显示占位符强。
+   */
+  var VERSION = /__DSH_ETA_VERSION__/.test('__DSH_ETA_VERSION__') ? 'dev' : '__DSH_ETA_VERSION__'
 
   /**
    * 当前跑在**桌面浮窗**里还是浏览器页面里？
@@ -314,6 +321,9 @@
     '#dsh-eta-panel[data-hidden="1"]{display:none}',
     '.dsh-eta-panel-head{display:flex;align-items:center;gap:8px;margin-bottom:9px}',
     '.dsh-eta-panel-head b{flex:1;font-size:12px;font-weight:600}',
+    '.dsh-eta-version{font-size:9.5px;letter-spacing:.3px;',
+    'color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8));',
+    'background:rgba(127,127,127,.12);border-radius:99px;padding:1px 6px;user-select:text}',
     '.dsh-eta-group{margin:9px 0 0;padding-top:9px;',
     'border-top:.5px solid var(--dsw-alias-border-l4,rgba(127,127,127,.22))}',
     '.dsh-eta-group:first-of-type{margin-top:0;padding-top:0;border-top:0}',
@@ -678,7 +688,12 @@
     root.setAttribute('data-hidden', '1')
 
     var head = el('div', 'dsh-eta-panel-head')
+    // 版本号跟在标题后：求助截图一眼看到「现在跑的是哪版」。
     var heading = el('b', '', '外观设置')
+    var version = el('span', 'dsh-eta-version', VERSION)
+    version.title = 'dsh-eta-forecast v' + VERSION
+    head.appendChild(heading)
+    head.appendChild(version)
     var close = el('button', 'dsh-eta-btn')
     close.type = 'button'
     close.title = '关闭'
@@ -1701,7 +1716,13 @@
       return
     }
 
-    if (snapshot.remainMs === null) {
+    if (snapshot.overtime) {
+      // 已经跑过预测终点：不再演倒计时，改显「已超时 N 分」。
+      // 大字换成已跑时长 —— 这时候唯一诚实的信息是「跑了多久」。
+      nodes.clockBig.textContent = durationOf(snapshot.elapsedMs) || '—'
+      nodes.clockUnit.textContent = '已超时 ' + durationOf(snapshot.overtimeMs || 0)
+      nodes.sub.textContent = '比预测的慢 —— 继续等，或这轮先不管它'
+    } else if (snapshot.remainMs === null) {
       nodes.clockBig.textContent = '—'
       nodes.clockUnit.textContent = ''
       nodes.sub.textContent = '已跑 ' + durationOf(snapshot.elapsedMs) + '，还看不出节奏'
