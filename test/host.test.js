@@ -1,10 +1,11 @@
 /**
  * 宿主半侧的挂载冒烟测试：用一个最小的假 ctx 把 `apply` 真的跑起来，
- * 验证四件事——
+ * 验证五件事——
  *   1. apply 不抛异常（插件加载失败会让整个 profile 起不来，这是最贵的 bug）；
  *   2. 注入行进了表，且是**内联 script 行**（桌面端唯一通道）；
- *   3. 两个只读路由真的注册了，且 handler 返回的东西能 JSON 化；
- *   4. session/event 真的能推动估算状态（从事件到 HTTP 响应打通）。
+ *   3. 路由真的注册了，且 handler 返回的东西能 JSON 化；
+ *   4. session/event 真的能推动估算状态（从事件到 HTTP 响应打通）；
+ *   5. **配置路由的写入口只对回环开放**（这是插件唯一的写接口）。
  *
  * 这里不测 DSH 本身，测的是「我们这半边有没有接错线」。
  */
@@ -22,6 +23,8 @@ function fakeHost() {
   let injectTable = []
 
   const webServer = {
+    /** 端口 > 0 才会尝试拉起桌面窗口；测试里不拉。 */
+    port: 0,
     register(route) {
       if (routes.has(route.path)) throw new Error('duplicate ' + route.path)
       routes.set(route.path, route)
@@ -103,15 +106,178 @@ function callRoute(host, path) {
   return res.out
 }
 
-test('apply 不抛异常，且注册了注入行与两个只读路由', () => {
+/** 造一个可读的假 req（带 socket.remoteAddress），用来测写接口的栅栏。 */
+function fakeRequest(options) {
+  const opts = options || {}
+  const listeners = new Map()
+  const req = {
+    method: opts.method || 'GET',
+    url: opts.url || '/dsh-eta/config',
+    headers: { 'content-type': 'application/json' },
+    socket: { remoteAddress: opts.remoteAddress === undefined ? '127.0.0.1' : opts.remoteAddress },
+    on(event, handler) {
+      if (!listeners.has(event)) listeners.set(event, [])
+      listeners.get(event).push(handler)
+      return req
+    },
+    destroy() {},
+  }
+  // 立刻把请求体推出去（测试里不需要真正的流式时序）。
+  setImmediate(() => {
+    const body = opts.body
+    if (body !== undefined && body !== null) {
+      for (const handler of listeners.get('data') || []) handler(Buffer.from(String(body)))
+    }
+    for (const handler of listeners.get('end') || []) handler()
+  })
+  return req
+}
+
+/** 调配置路由（GET/POST）。 */
+async function callConfig(host, options) {
+  const route = host.routes.get('/dsh-eta/config')
+  assert.ok(route, 'config route must be registered')
+  const res = fakeResponse()
+  await route.handler(fakeRequest(options), res)
+  return res.out
+}
+
+test('apply 不抛异常，且注册了三个路由（两个只读 + 一个回环写）', () => {
   const host = fakeHost()
   assert.doesNotThrow(() => plugin.apply(host.ctx))
   assert.equal(plugin.name, 'dsh-eta-forecast')
 
   assert.ok(host.routes.has('/dsh-eta/eta.js'), 'client script route')
   assert.ok(host.routes.has('/dsh-eta/state.json'), 'state route')
-  assert.equal(host.routes.size, 2, 'exactly two read-only routes, no write surface')
+  assert.ok(host.routes.has('/dsh-eta/config'), 'config route (display mode)')
+  assert.equal(host.routes.size, 3, 'two read-only routes + one loopback-only config route')
   host.teardown()
+})
+
+/* ---------- 显示位置配置（唯一的写接口，栅栏必须测） ---------- */
+
+test('配置路由 GET 返回当前显示位置与可选值', async () => {
+  const host = fakeHost()
+  plugin.apply(host.ctx)
+  const out = await callConfig(host, { method: 'GET' })
+  assert.equal(out.status, 200)
+  const body = JSON.parse(out.body)
+  assert.equal(body.ok, true)
+  assert.deepEqual(body.modes, ['web', 'desktop', 'both', 'none'])
+  assert.ok(body.modes.indexOf(body.display) !== -1, 'current display must be one of the modes')
+  assert.equal(body.display, 'both', 'default is both, same as dsh-pet')
+  host.teardown()
+})
+
+test('POST 能从回环改显示位置', async () => {
+  const host = fakeHost()
+  plugin.apply(host.ctx)
+  const out = await callConfig(host, {
+    method: 'POST',
+    remoteAddress: '127.0.0.1',
+    body: JSON.stringify({ display: 'desktop' }),
+  })
+  assert.equal(out.status, 200)
+  assert.equal(JSON.parse(out.body).display, 'desktop')
+
+  // 再读一次确认持久在内存里
+  const after = JSON.parse((await callConfig(host, { method: 'GET' })).body)
+  assert.equal(after.display, 'desktop')
+  host.teardown()
+})
+
+test('POST 从非回环地址被拒绝（局域网不能改显示设置）', async () => {
+  const host = fakeHost()
+  plugin.apply(host.ctx)
+  const out = await callConfig(host, {
+    method: 'POST',
+    remoteAddress: '192.168.1.50',
+    body: JSON.stringify({ display: 'none' }),
+  })
+  assert.equal(out.status, 403, 'non-loopback writes must be rejected')
+
+  // 并且状态没被改
+  const after = JSON.parse((await callConfig(host, { method: 'GET' })).body)
+  assert.equal(after.display, 'both', 'a rejected write must not change anything')
+  host.teardown()
+})
+
+test('POST 拒绝非法 display 值，不会写入奇怪内容', async () => {
+  const host = fakeHost()
+  plugin.apply(host.ctx)
+  for (const bad of ['', 'DESKTOP', 'everywhere', '<script>', null, 42]) {
+    const out = await callConfig(host, {
+      method: 'POST',
+      remoteAddress: '127.0.0.1',
+      body: JSON.stringify({ display: bad }),
+    })
+    assert.equal(out.status, 400, 'display=' + JSON.stringify(bad) + ' must be rejected')
+  }
+  const after = JSON.parse((await callConfig(host, { method: 'GET' })).body)
+  assert.equal(after.display, 'both')
+  host.teardown()
+})
+
+test('POST 拒绝畸形 JSON 与不支持的方法', async () => {
+  const host = fakeHost()
+  plugin.apply(host.ctx)
+
+  const bad = await callConfig(host, { method: 'POST', remoteAddress: '127.0.0.1', body: '{ not json' })
+  assert.equal(bad.status, 400)
+
+  const put = await callConfig(host, { method: 'PUT', remoteAddress: '127.0.0.1' })
+  assert.equal(put.status, 405)
+
+  // OPTIONS 预检要能过（否则浏览器里跨源写会被挡）
+  const options = await callConfig(host, { method: 'OPTIONS' })
+  assert.equal(options.status, 204)
+  host.teardown()
+})
+
+test('state.json 带上 display，网页端据此把自己藏起来', async () => {
+  const host = fakeHost()
+  plugin.apply(host.ctx)
+
+  const before = JSON.parse(callRoute(host, '/dsh-eta/state.json').body)
+  assert.equal(before.display, 'both')
+
+  await callConfig(host, { method: 'POST', remoteAddress: '127.0.0.1', body: JSON.stringify({ display: 'desktop' }) })
+
+  const after = JSON.parse(callRoute(host, '/dsh-eta/state.json').body)
+  assert.equal(after.display, 'desktop', 'state must expose the mode so the client can hide itself')
+  host.teardown()
+})
+
+test('「仅桌面」时不往网页注入脚本', () => {
+  const host = fakeHost()
+  plugin.apply(host.ctx)
+
+  // 默认 both：注入
+  assert.equal(host.collectInjections().length, 1, 'both mode injects into the web page')
+
+  // 切到 desktop 后不再注入
+  return callConfig(host, {
+    method: 'POST',
+    remoteAddress: '127.0.0.1',
+    body: JSON.stringify({ display: 'desktop' }),
+  }).then(() => {
+    assert.equal(host.collectInjections().length, 0, 'desktop-only must not inject into the web page')
+    return callConfig(host, {
+      method: 'POST',
+      remoteAddress: '127.0.0.1',
+      body: JSON.stringify({ display: 'none' }),
+    })
+  }).then(() => {
+    assert.equal(host.collectInjections().length, 0, 'none must not inject either')
+    return callConfig(host, {
+      method: 'POST',
+      remoteAddress: '127.0.0.1',
+      body: JSON.stringify({ display: 'web' }),
+    })
+  }).then(() => {
+    assert.equal(host.collectInjections().length, 1, 'web mode injects again')
+    host.teardown()
+  })
 })
 
 test('注入行是内联 script（不是 script-src），且重复 emit 不重复推', () => {

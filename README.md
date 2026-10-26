@@ -57,6 +57,30 @@ dsh plugin --profile desktop add link:<本目录绝对路径>
 
 装完**重启 DSH**。挂件默认出现在右下角。
 
+## 显示位置
+
+设置面板里有「显示位置」，四选一（与 dsh-pet 同一套语义，不用记两套词）：
+
+| 值 | 含义 |
+| --- | --- |
+| 仅网页 | 只显示 DSH 页面右下角的挂件 |
+| 仅桌面 | 只显示桌面上的浮窗（置顶、透明、不占任务栏） |
+| 两者 | 两边都显示（默认） |
+| 都不 | 全部隐藏 |
+
+**桌面浮窗**由宿主拉起一个 Electron 小窗（`runtime/electron-helper/`）。三点说明：
+
+1. **复用现成的 Electron 运行时**（`$DSH_HOME/electron`）。dsh-pet 已经下过那份 300MB，
+   不重复下载。**找不到时不会替你静默下载** —— 那是个用户没同意的重操作，改为明确报错，
+   可用 `DSH_ETA_ELECTRON_PATH` 指定路径，或先装 dsh-pet 让它把运行时下好。
+2. **默认整窗点击穿透**，只有光标落在挂件上才可交互。否则一个置顶透明窗会把下层应用全挡住。
+3. **拖动的是窗口，不是 DOM 元素**。网页端拖元素、桌面端拖窗口，这是唯一需要分叉的地方；
+   渲染、缩放、壁纸、右键菜单、设置面板完全共用同一份 `assets/eta-client.js`。
+
+配置存在**宿主内存**里（不是 localStorage）：换浏览器也应该一致。改配置走
+`POST /dsh-eta/config`，**只接受回环请求**（判据是 socket 的 remoteAddress，不信任何请求头）——
+这是本插件唯一的写接口，局域网改不了。
+
 ## 操作
 
 - **拖动**：**整张卡片**都能拖 —— 按住**左键**或**右键**拖都行（不限于标题行）。
@@ -66,7 +90,7 @@ dsh plugin --profile desktop add link:<本目录绝对路径>
 - **右键菜单**：右键**原地轻点**（按下后不移动、直接松开）唤出菜单
   （收起 / 展开 · 外观设置 · 回到右下角）。
   拖动和菜单靠「按下后有没有移动」区分：移动了就是拖，没移动就是菜单。
-- 这些偏好存在 `localStorage`（键 `dsh-eta-forecast:v1`），不占宿主配置。
+- 这些偏好存在 `localStorage`（键 `dsh-eta-forecast:v1`）；显示位置是宿主级的，不在这里。
 
 > **「隐藏挂件」已移除。** 原来点 `×` 会把整张卡片收起来，只能靠双击右下角
 > 一小块热区找回 —— 既难发现，也容易把自己锁在外面（尤其缩到 25% 之后）。
@@ -123,21 +147,28 @@ localStorage。所以缩放低于 60% 时，在卡片右下角贴一块 44px 的
 
 ## 它不做什么
 
-- **不注册任何写接口。** 只有两个只读路由（脚本本体与快照），没有配置、没有
-  凭据、没有文件写入 ⇒ 没有攻击面，局域网里看也安全。
+- **只开两个只读路由 + 一个回环写路由。** `/dsh-eta/eta.js`、`/dsh-eta/state.json` 只读；
+  `/dsh-eta/config` 是唯一的写接口，而且**只接受来自 127.0.0.1 / ::1 的 POST**
+  （判据是 socket 的 remoteAddress，不信任何可伪造的请求头）。局域网改不了显示设置。
 - **不 import 宿主服务**（`webServer` 除外，且用 `ctx.inject` 动态等待）。老宿主
   少一个服务时，插件降级而不是整个不 apply。
 - **不在页面里重算。** 公式只存在于 `lib/forecast.js` 一处。前后端各写一遍是这类
   小挂件最常见的坏味道：两边一改就悄悄不一致。
+- **不替你下载 300MB。** 桌面模式需要 Electron 运行时，找不到就报错并说清怎么装，
+  绝不静默下载。
 
 ## 结构
 
 ```
 lib/forecast.js     纯估算核心（无 IO / 无 DOM，可 node --test）
-lib/index.js        宿主半侧：订阅 session/event、注入页面、两个只读路由
+lib/index.js        宿主半侧：订阅 session/event、注入页面、三个路由
+lib/desktop.js      桌面窗口管理：找 Electron、拉起/关停 helper、崩溃退避重启
 assets/eta-client.js 浏览器半侧：每 2 秒拉一次快照，只负责画 + 外观
+runtime/electron-helper/  桌面浮窗（Electron 主进程 + 渲染页），复用同一份客户端脚本
 test/forecast.test.js 20 个用例，全部在测「会算错的地方」
 test/client.test.js  29 个用例，用最小 DOM 垫片把客户端脚本真跑起来
+test/host.test.js    16 个用例，路由/注入/写接口栅栏
+test/desktop.test.js  6 个用例，Electron 路径解析与「不静默下载」
 test/visual-check.mjs 可选：真浏览器（Edge）跑 demo.html 并截图
 demo.html           外观预览页，不参与插件运行
 cordis.patch.yml    bundle 挂载声明

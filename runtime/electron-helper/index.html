@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <!-- 只允许连本机宿主；不加载任何外域资源。style-src 的 unsafe-inline 是给挂件自己
+         写 style 属性用的（挂件的样式全在 JS 里拼），script-src 允许 http 是因为
+         客户端脚本要从 127.0.0.1 的宿主路由取。 -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' http://127.0.0.1:* http://localhost:*; style-src 'unsafe-inline'; img-src http: https: data:; connect-src http://127.0.0.1:* http://localhost:*"
+    />
+    <title>dsh-eta 桌面挂件</title>
+    <style>
+      /* 窗口是透明的：只画挂件本身，周围一律不画东西。 */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+        font-family: 'Microsoft YaHei UI', 'Segoe UI', system-ui, sans-serif;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      #dsh-eta-desktop-error {
+        position: fixed;
+        left: 8px;
+        top: 8px;
+        right: 8px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        background: rgba(217, 79, 61, 0.95);
+        color: #fff;
+        font-size: 12px;
+        line-height: 1.5;
+        display: none;
+        z-index: 99999;
+        word-break: break-all;
+      }
+      #dsh-eta-desktop-error[data-on='1'] {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="dsh-eta-desktop-error"></div>
+    <script src="./desktop-renderer.js"></script>
+  </body>
+</html>

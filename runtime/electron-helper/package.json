@@ -1,0 +1,6 @@
+{
+  "name": "dsh-eta-forecast-electron-helper",
+  "private": true,
+  "type": "commonjs",
+  "main": "main.js"
+}

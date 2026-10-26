@@ -19,11 +19,56 @@
    * 每拖一下滑块就要重写整坨大字符串 —— 主线程会卡，也更容易撞配额。 */
   var WALLPAPER_KEY = 'dsh-eta-forecast:wallpaper'
   var STATE_URL = '/dsh-eta/state.json'
+  /** 显示位置配置（GET 查 / POST 改；写操作宿主只接受回环请求）。 */
+  var CONFIG_URL = '/dsh-eta/config'
   var POLL_MS = 2000
   var STYLE_ID = 'dsh-eta-style'
   var ROOT_ID = 'dsh-eta-root'
   var PANEL_ID = 'dsh-eta-panel'
   var CONTEXT_MENU_ID = 'dsh-eta-ctxmenu'
+
+  /**
+   * 当前跑在**桌面浮窗**里还是浏览器页面里？
+   *
+   * 判据是桌面渲染壳在 html 上打的标记（见 runtime/electron-helper/desktop-renderer.js）。
+   * 两种情况的差别只有一处但很关键：**拖动的对象不同** ——
+   * 网页里拖的是 DOM 元素，桌面里拖的是整个窗口。其余逻辑（渲染、缩放、壁纸、
+   * 右键菜单、设置面板）完全共用，不做第二套。
+   */
+  var IS_DESKTOP = (function () {
+    try {
+      return document.documentElement.getAttribute('data-dsh-eta-desktop') === '1'
+    } catch (err) {
+      return false
+    }
+  })()
+
+  /** 桌面端事件通道：把拖动位移交给渲染壳换算成窗口坐标。网页端是空操作。 */
+  function emitDesktop(type, detail) {
+    if (!IS_DESKTOP) return
+    try {
+      window.dispatchEvent(new CustomEvent(type, { detail: detail || {} }))
+    } catch (err) {
+      /* 老浏览器 / 测试垫片没有 CustomEvent，忽略即可 */
+    }
+  }
+
+  /**
+   * 把相对路径解析成**绝对 URL**。
+   *
+   * 网页端不需要（页面 origin 就是宿主，`/dsh-eta/...` 天然正确）；
+   * 但桌面浮窗的页面是 `file://`，相对路径会被解析成 `file:///C:/dsh-eta/...`，
+   * 既打不到宿主、也会被 CSP 的 connect-src 拦掉 —— 表现就是「窗口开着、
+   * 数据永远是空白」。所以桌面端必须走绝对地址。
+   */
+  function absoluteUrl(relative) {
+    if (!IS_DESKTOP) return relative
+    try {
+      var base = window.__dshEtaBaseUrl
+      if (typeof base === 'string' && base) return new URL(relative, base).toString()
+    } catch (err) { /* 落到下面原样返回 */ }
+    return relative
+  }
 
   /* 缩放范围：25% ~ 100%。下限不是拍脑袋 —— 再小字就彻底读不出来了，
    * 与其给一个「能拖到 5%」的假自由度，不如把边界钉在还有意义的地方。 */
@@ -174,6 +219,8 @@
     // 缩放靠 transform：只影响绘制，不触发重排，拖动时也不会掉帧。
     'transform-origin:top left;overflow:hidden}',
     '#dsh-eta-root[data-dragging="1"]{transition:none}',
+    // 「仅桌面 / 都不」时网页里的挂件整体消失（宿主已经不注入了，这里兜住已打开的页面）。
+    '#dsh-eta-root[data-display-off="1"]{display:none}',
     // 壁纸三层都铺在内容下面；用 DOM 末尾 + z-index 而不是插到最前面，
     // 这样既有子节点的索引（标题行仍是 children[0]）保持不变。
     // 同一 z-index 下 DOM 越靠后画得越上层，所以顺序是：图 → 暗化 → 底色 → 内容。
@@ -281,6 +328,10 @@
     /* 复选框跟着文字排，不撑高整行。 */
     '.dsh-eta-check{flex:none;width:14px;height:14px;margin:0;cursor:pointer;',
     'accent-color:var(--dsw-alias-brand-primary,#4f9dd9)}',
+    /* 下拉选择：与输入框同一套观感，宽度收窄以免挤掉标签。 */
+    '.dsh-eta-select{flex:none;width:88px;box-sizing:border-box;font:inherit;font-size:11.5px;',
+    'padding:3px 4px;border-radius:6px;cursor:pointer;',
+    'border:.5px solid rgba(127,127,127,.4);background:transparent;color:inherit}',
   ].join('')
 
   function ensureStyle() {
@@ -507,6 +558,8 @@
     if (nodes.gear) nodes.gear.setAttribute('data-active', '1')
     syncPanelValues()
     positionPanel()
+    // 显示位置是宿主级设置，每次打开面板都问一次（别人可能刚在别处改过）。
+    refreshDisplayMode()
   }
 
   function hidePanel() {
@@ -659,6 +712,34 @@
     menuRow.appendChild(menuToggle)
     uiGroup.appendChild(menuRow)
 
+    /* --- 显示位置：仅网页 / 仅桌面 / 两者 / 都不 --- */
+    var whereGroup = el('div', 'dsh-eta-group')
+    var whereRow = el('div', 'dsh-eta-row')
+    var whereLabel = el('label', '', '显示位置')
+    whereLabel.title = '桌面 = 桌面上的浮窗；网页 = DSH 页面里的挂件'
+    var whereSelect = el('select')
+    whereSelect.className = 'dsh-eta-select'
+    var WHERE_OPTIONS = [
+      { value: 'web', label: '仅网页' },
+      { value: 'desktop', label: '仅桌面' },
+      { value: 'both', label: '两者' },
+      { value: 'none', label: '都不' },
+    ]
+    for (var wi = 0; wi < WHERE_OPTIONS.length; wi++) {
+      var option = el('option', '', WHERE_OPTIONS[wi].label)
+      option.value = WHERE_OPTIONS[wi].value
+      whereSelect.appendChild(option)
+    }
+    whereSelect.addEventListener('change', function () {
+      setDisplayMode(whereSelect.value)
+    })
+    whereRow.appendChild(whereLabel)
+    whereRow.appendChild(whereSelect)
+    whereGroup.appendChild(whereRow)
+    var whereHint = el('div', 'dsh-eta-hint', '')
+    whereHint.setAttribute('data-role', 'display-hint')
+    whereGroup.appendChild(whereHint)
+
     /* --- 恢复默认 --- */
     var resetGroup = el('div', 'dsh-eta-group')
     var resetRow = el('div', 'dsh-eta-actions')
@@ -674,6 +755,7 @@
     root.appendChild(zoomGroup)
     root.appendChild(wallGroup)
     root.appendChild(uiGroup)
+    root.appendChild(whereGroup)
     root.appendChild(resetGroup)
     root.appendChild(hint)
     document.body.appendChild(root)
@@ -682,6 +764,7 @@
     panelNodes = {
       zoom: zoomRow, blur: blurRow, dim: dimRow, alpha: alphaRow,
       urlInput: urlInput, fileInput: fileInput, hint: hint, menuToggle: menuToggle,
+      whereSelect: whereSelect, whereHint: whereHint,
     }
 
     close.addEventListener('click', function (event) {
@@ -753,6 +836,107 @@
       row.output.textContent = row.format(value)
     }
     if (panelNodes.menuToggle) panelNodes.menuToggle.checked = appearance.menuHidden === true
+    if (panelNodes.whereSelect && displayMode) panelNodes.whereSelect.value = displayMode
+  }
+
+  /* ---------- 显示位置（web / desktop / both / none） ---------- */
+
+  /** 当前显示位置。'both' 是默认值，与宿主的默认一致。 */
+  var displayMode = 'both'
+
+  /**
+   * 拉一次配置并同步到设置面板。
+   *
+   * 为什么不从这个值推 UI 而是每次去问：显示位置是**宿主级**设置（桌面窗口也读它），
+   * 存在宿主内存里而不是浏览器 localStorage —— 换浏览器也该一致。
+   */
+  function refreshDisplayMode() {
+    return window.fetch(absoluteUrl(CONFIG_URL), { cache: 'no-store' })
+      .then(function (response) {
+        if (!response.ok) throw new Error('HTTP ' + response.status)
+        return response.json()
+      })
+      .then(function (payload) {
+        if (!payload || !payload.ok) return
+        displayMode = String(payload.display || displayMode)
+        if (panelNodes && panelNodes.whereSelect) panelNodes.whereSelect.value = displayMode
+        if (panelNodes && panelNodes.whereHint) {
+          var extra = payload.desktopRunning ? '（桌面浮窗运行中）' : ''
+          if (payload.error) {
+            panelNodes.whereHint.textContent = payload.error
+            panelNodes.whereHint.setAttribute('data-tone', 'warn')
+          } else {
+            panelNodes.whereHint.textContent = extra
+            panelNodes.whereHint.removeAttribute('data-tone')
+          }
+        }
+      })
+      .catch(function () {
+        /* 拿不到配置就保持现状：这个面板不该因为配置接口抽风而坏掉 */
+      })
+  }
+
+  /**
+   * 改显示位置。
+   *
+   * 写接口只在回环放行（见宿主侧 isLoopback）。这里失败要**说清楚原因**，
+   * 不能静默 —— 用户点了「仅桌面」却没反应，会以为功能坏了。
+   */
+  function setDisplayMode(next) {
+    var value = String(next || '')
+    if (['web', 'desktop', 'both', 'none'].indexOf(value) === -1) return
+    window.fetch(absoluteUrl(CONFIG_URL), {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ display: value }),
+    })
+      .then(function (response) {
+        return response.json().then(function (payload) {
+          return { status: response.status, payload: payload }
+        })
+      })
+      .then(function (result) {
+        if (result.status === 200 && result.payload && result.payload.ok) {
+          displayMode = String(result.payload.display || value)
+          if (IS_DESKTOP) {
+            // 桌面浮窗里改完，自己可能就该关掉了（切到 web/none）。
+            // 宿主会停掉窗口，这里只给个提示，不跟它抢关闭权。
+            setHint('已切到「' + labelOfMode(displayMode) + '」', 'ok')
+          } else {
+            // 网页端：切到不含 web 的模式时，把自己藏起来（刷新后注入也会消失）。
+            applyLocalDisplayMode(displayMode)
+            setHint('已切到「' + labelOfMode(displayMode) + '」', 'ok')
+          }
+          refreshDisplayMode()
+          return
+        }
+        var message = (result.payload && result.payload.error) || ('HTTP ' + result.status)
+        setHint('改显示位置失败：' + message, 'warn')
+      })
+      .catch(function (error) {
+        setHint('改显示位置失败：' + (error && error.message ? error.message : String(error)), 'warn')
+      })
+  }
+
+  function labelOfMode(mode) {
+    if (mode === 'web') return '仅网页'
+    if (mode === 'desktop') return '仅桌面'
+    if (mode === 'both') return '两者'
+    if (mode === 'none') return '都不'
+    return String(mode)
+  }
+
+  /** 网页端本地应用显示位置（桌面窗口由宿主负责启停）。 */
+  function applyLocalDisplayMode(mode) {
+    if (IS_DESKTOP || !nodes) return
+    var shouldShow = mode === 'web' || mode === 'both'
+    if (shouldShow) nodes.root.removeAttribute('data-display-off')
+    else {
+      nodes.root.setAttribute('data-display-off', '1')
+      hidePanel()
+      hideContextMenu()
+    }
   }
 
   function resetAll() {
@@ -1066,11 +1250,18 @@
       active = true
       dragging = false
       nodes.root.setAttribute('data-dragging', '1')
-      // 拖动期间改为 left/top 定位，否则 right/bottom 会让坐标算反。
-      nodes.root.style.left = originLeft + 'px'
-      nodes.root.style.top = originTop + 'px'
-      nodes.root.style.right = 'auto'
-      nodes.root.style.bottom = 'auto'
+      // 桌面窗口里拖的是**窗口**，不是元素：先告诉渲染壳"开始拖了"，
+      // 并把可交互状态锁住（否则中途翻回穿透会收不到 pointerup）。
+      if (IS_DESKTOP) {
+        emitDesktop('dsh-eta-desktop-drag-start', {})
+        emitDesktop('dsh-eta-desktop-busy', true)
+      } else {
+        // 拖动期间改为 left/top 定位，否则 right/bottom 会让坐标算反。
+        nodes.root.style.left = originLeft + 'px'
+        nodes.root.style.top = originTop + 'px'
+        nodes.root.style.right = 'auto'
+        nodes.root.style.bottom = 'auto'
+      }
       if (isRight) hideContextMenu()
       try { handle.setPointerCapture(event.pointerId) } catch (err) { /* 忽略 */ }
     })
@@ -1083,6 +1274,11 @@
         if (Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return
         moved = true
         dragging = true
+      }
+      if (IS_DESKTOP) {
+        // 桌面端：把位移交给壳换算成窗口坐标。
+        emitDesktop('dsh-eta-desktop-move', { dx: dx, dy: dy })
+        return
       }
       // 用可视尺寸（getBoundingClientRect）而不是 offsetWidth：
       // 缩放后布局宽度仍是 236，只有视觉盒子才是真大小。
@@ -1106,8 +1302,9 @@
       fromRight = false
       nodes.root.removeAttribute('data-dragging')
       try { handle.releasePointerCapture(event.pointerId) } catch (err) { /* 忽略 */ }
+      if (IS_DESKTOP) emitDesktop('dsh-eta-desktop-busy', false)
       if (wasMoved) {
-        writeSettings({ left: nodes.root.offsetLeft, top: nodes.root.offsetTop })
+        if (!IS_DESKTOP) writeSettings({ left: nodes.root.offsetLeft, top: nodes.root.offsetTop })
         if (panel && panel.getAttribute('data-hidden') !== '1') positionPanel()
         return
       }
@@ -1128,28 +1325,32 @@
     // 右键的 pointerup 之后浏览器还会补一个 contextmenu，交给上面的 contextmenu
     // 监听统一吞掉（它已 preventDefault），所以这里不需要额外处理。
 
-    // 记住的位置在挂载时恢复；先把默认的 right/bottom 折算成 left/top，
-    // 之后缩放、拖动、夹回屏幕都在同一套坐标系里算。
-    requestAnimationFrame(function () {
-      if (!nodes) return
-      var rect = nodes.root.getBoundingClientRect()
-      var saved = readSettings()
-      var left = rect.left
-      var top = rect.top
-      if (typeof saved.left === 'number' && typeof saved.top === 'number') {
-        left = Math.max(0, Math.min(window.innerWidth - rect.width, saved.left))
-        top = Math.max(0, Math.min(window.innerHeight - rect.height, saved.top))
-      }
-      nodes.root.style.left = left + 'px'
-      nodes.root.style.top = top + 'px'
-      nodes.root.style.right = 'auto'
-      nodes.root.style.bottom = 'auto'
-      // 缩放要在定位之后应用，否则「保持右下角」的锚点算的是还没定位的盒子。
-      applyZoom(appearance.zoom, 'bottom-right')
-    })
+    // 桌面窗口里不恢复 left/top：窗口位置由壳控制，挂件永远贴窗口右下角。
+    if (!IS_DESKTOP) {
+      // 记住的位置在挂载时恢复；先把默认的 right/bottom 折算成 left/top，
+      // 之后缩放、拖动、夹回屏幕都在同一套坐标系里算。
+      requestAnimationFrame(function () {
+        if (!nodes) return
+        var rect = nodes.root.getBoundingClientRect()
+        var saved = readSettings()
+        var left = rect.left
+        var top = rect.top
+        if (typeof saved.left === 'number' && typeof saved.top === 'number') {
+          left = Math.max(0, Math.min(window.innerWidth - rect.width, saved.left))
+          top = Math.max(0, Math.min(window.innerHeight - rect.height, saved.top))
+        }
+        nodes.root.style.left = left + 'px'
+        nodes.root.style.top = top + 'px'
+        nodes.root.style.right = 'auto'
+        nodes.root.style.bottom = 'auto'
+        // 缩放要在定位之后应用，否则「保持右下角」的锚点算的是还没定位的盒子。
+        applyZoom(appearance.zoom, 'bottom-right')
+      })
+    }
 
     window.addEventListener('resize', function () {
       if (!nodes) return
+      if (IS_DESKTOP) return
       if (!nodes.root.style.left) return
       var rect = nodes.root.getBoundingClientRect()
       var width = rect.width || nodes.root.offsetWidth
@@ -1169,6 +1370,28 @@
   function pickSession(payload) {
     if (!payload || !Array.isArray(payload.sessions) || payload.sessions.length === 0) return null
     return payload.sessions[0]
+  }
+
+  /**
+   * 「显示位置」里的 web / both 才在网页里画。
+   *
+   * 宿主在「仅桌面」时已经不再注入脚本了，但已经打开的页面不会因此消失
+   * （脚本早在页面加载时就跑起来了）。所以这里再按快照里的 display 兜一层，
+   * 让用户切到「仅桌面」后网页里那个挂件自己藏起来。
+   */
+  function applyDisplayMode(payload) {
+    if (IS_DESKTOP) return
+    var mode = payload && typeof payload.display === 'string' ? payload.display : ''
+    if (!mode) return
+    var shouldShow = mode === 'web' || mode === 'both'
+    if (!nodes) return
+    if (shouldShow) {
+      nodes.root.removeAttribute('data-display-off')
+    } else {
+      nodes.root.setAttribute('data-display-off', '1')
+      hidePanel()
+      hideContextMenu()
+    }
   }
 
   function render(snapshot) {
@@ -1269,13 +1492,15 @@
     var options = { cache: 'no-store' }
     if (controller) options.signal = controller.signal
 
-    window.fetch(STATE_URL, options)
+    window.fetch(absoluteUrl(STATE_URL), options)
       .then(function (response) {
         if (!response.ok) throw new Error('HTTP ' + response.status)
         return response.json()
       })
       .then(function (payload) {
         failureCount = 0
+        // 先按显示位置决定要不要露脸，再渲染内容。
+        applyDisplayMode(payload)
         render(pickSession(payload))
       })
       .catch(function () {
@@ -1312,15 +1537,22 @@
 
   function tryStart() {
     if (started) return true
-    try {
-      if (!isChatRoot(document.getElementById('root'))) return false
-    } catch (err) {
-      return false
+    // 桌面浮窗里没有聊天输入区（那是独立的一个空页面），所以这条门槛要跳过：
+    // 否则桌面端永远不会挂载 —— 表现就是「窗口开了但里面什么都没有」。
+    if (!IS_DESKTOP) {
+      try {
+        if (!isChatRoot(document.getElementById('root'))) return false
+      } catch (err) {
+        return false
+      }
     }
     started = true
     try { start() } catch (err) {
       started = false
-      try { console.warn('[dsh-eta] 挂载失败', err) } catch (inner) { /* 忽略 */ }
+      // 用 console.log 而不是 console.warn：桌面渲染壳只转发 console.log
+      // （见 runtime/electron-helper/main.js 的 console-message）。
+      // 挂载失败在透明窗口里就是「什么都没有」，必须留下线索。
+      try { console.log('[dsh-eta] 挂载失败：' + ((err && err.stack) || String(err))) } catch (inner) { /* 忽略 */ }
     }
     return true
   }

@@ -15,6 +15,7 @@
   "files": [
     "lib",
     "assets",
+    "runtime",
     "cordis.patch.yml",
     "README.md"
   ],
