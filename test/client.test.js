@@ -131,13 +131,17 @@ function makeDocument() {
 }
 
 /** 跑一遍客户端脚本，返回它用的 window/document 与「渲染后的挂件根节点」。 */
-function bootClient(snapshotResponses) {
+function bootClient(snapshotResponses, options) {
   const doc = makeDocument()
   const root = new FakeNode('div', doc)
   root.id = 'root'
   doc.byId.set('root', root)
 
   const storage = new Map()
+  // 预置 localStorage：用来测「脏数据 / 上次留下的设置」这类启动路径。
+  const seed = (options && options.storage) || {}
+  Object.keys(seed).forEach((key) => storage.set(key, String(seed[key])))
+
   const timers = []
   let pollIndex = 0
 
@@ -147,7 +151,9 @@ function bootClient(snapshotResponses) {
     localStorage: {
       getItem(key) { return storage.has(key) ? storage.get(key) : null },
       setItem(key, value) { storage.set(key, String(value)) },
+      removeItem(key) { storage.delete(key) },
     },
+    getComputedStyle() { return { backgroundColor: 'rgb(255, 255, 255)' } },
     fetch() {
       const payload = snapshotResponses[Math.min(pollIndex, snapshotResponses.length - 1)]
       pollIndex++
@@ -203,8 +209,8 @@ function bootClient(snapshotResponses) {
   return { doc, window, widget, storage, timers, poll: () => timers[0] && timers[0]() }
 }
 
-/** 取挂件里第一个 class 匹配的节点的文字。 */
-function textOf(widget, className) {
+/** 取挂件里第一个 class 匹配的节点。 */
+function nodeOf(widget, className) {
   const walk = (node) => {
     if (node.className === className) return node
     for (const child of node.children) {
@@ -213,7 +219,12 @@ function textOf(widget, className) {
     }
     return null
   }
-  const found = walk(widget)
+  return walk(widget)
+}
+
+/** 取挂件里第一个 class 匹配的节点的文字。 */
+function textOf(widget, className) {
+  const found = nodeOf(widget, className)
   return found === null ? null : found.textContent
 }
 
@@ -371,4 +382,233 @@ test('宿主返回 3 次失败才清空显示（一次抖动不该抹掉 ETA）'
   ctx.poll()
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(textOf(ctx.widget, 'dsh-eta-sub'), '还没有进行中的对话')
+})
+
+/* ---------- 缩放与壁纸 ---------- */
+
+/** 在子树里收集所有 className 匹配的节点。 */
+function allOf(node, className) {
+  const out = []
+  const walk = (current) => {
+    if (current.className === className) out.push(current)
+    for (const child of current.children) walk(child)
+  }
+  walk(node)
+  return out
+}
+
+/** 在子树里找第一个 type 匹配的 input。 */
+function inputOf(node, type) {
+  const walk = (current) => {
+    if (current.tagName === 'INPUT' && current.type === type) return current
+    for (const child of current.children) {
+      const found = walk(child)
+      if (found) return found
+    }
+    return null
+  }
+  return walk(node)
+}
+
+/** 在子树里按文字找按钮。 */
+function buttonOf(node, label) {
+  const walk = (current) => {
+    if (current.tagName === 'BUTTON' && current.textContent === label) return current
+    for (const child of current.children) {
+      const found = walk(child)
+      if (found) return found
+    }
+    return null
+  }
+  return walk(node)
+}
+
+const CLICK = { stopPropagation() {} }
+
+/** 打开设置面板，返回面板节点。 */
+async function openPanel(ctx) {
+  const head = ctx.widget.children[0]
+  const gear = head.children[3]
+  assert.ok(gear, 'gear button must exist in the title row')
+  gear.dispatch('click', CLICK)
+  const panel = ctx.doc.getElementById('dsh-eta-panel')
+  assert.ok(panel, 'panel must be mounted after clicking the gear')
+  assert.equal(panel.getAttribute('data-hidden'), null)
+  return panel
+}
+
+test('齿轮按钮打开设置面板，再点一次收起', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+
+  const panel = await openPanel(ctx)
+  assert.equal(ctx.widget.getAttribute('data-hidden'), null, 'opening settings must not hide the widget')
+
+  // 面板是独立的顶层节点，不跟着挂件缩放变小
+  assert.equal(panel.id, 'dsh-eta-panel')
+  assert.equal(panel.parentNode, ctx.doc.body)
+
+  ctx.widget.children[0].children[3].dispatch('click', CLICK)
+  assert.equal(panel.getAttribute('data-hidden'), '1')
+})
+
+test('缩放滑块按比例缩卡片，并把值记进 localStorage', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const panel = await openPanel(ctx)
+
+  const zoom = inputOf(panel, 'range')
+  assert.ok(zoom, 'zoom range input must exist')
+  assert.equal(zoom.min, '25')
+  assert.equal(zoom.max, '100')
+
+  zoom.value = '50'
+  zoom.dispatch('input')
+  assert.equal(ctx.widget.style.transform, 'scale(0.5)')
+
+  const saved = JSON.parse(ctx.storage.get('dsh-eta-forecast:v1'))
+  assert.equal(saved.zoom, 50)
+
+  // 100% 时不该留一个恒等变换（省掉无谓的合成层）
+  zoom.value = '100'
+  zoom.dispatch('input')
+  assert.equal(ctx.widget.style.transform, '')
+})
+
+test('缩放值超出范围时被夹回 25%~100%', async () => {
+  // 手改过 localStorage 的脏数据不该让卡片缩成看不见的一点。
+  // 必须在启动前就写好：设置是在 build() 时读一次，之后再改 storage 不会重读。
+  const ctx = bootClient(
+    [{ ok: true, now: Date.now(), sessions: [] }],
+    { storage: { 'dsh-eta-forecast:v1': JSON.stringify({ zoom: 3 }) } },
+  )
+  await new Promise((resolve) => setImmediate(resolve))
+  const panel = await openPanel(ctx)
+  const zoom = inputOf(panel, 'range')
+  assert.equal(zoom.value, '25', 'below-min stored zoom must clamp to 25')
+  assert.equal(ctx.widget.style.transform, 'scale(0.25)', 'and the card itself must be clamped too')
+})
+
+test('壁纸链接生效、清除后复原，且存在独立键里', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const panel = await openPanel(ctx)
+
+  const url = inputOf(panel, 'text')
+  assert.ok(url, 'wallpaper url input must exist')
+  url.value = 'https://example.com/sky.jpg'
+  buttonOf(panel, '用链接').dispatch('click', CLICK)
+
+  assert.equal(ctx.widget.getAttribute('data-wallpaper'), '1')
+  const bg = allOf(ctx.widget, 'dsh-eta-bg')[0]
+  assert.ok(bg, 'wallpaper layer must exist')
+  assert.ok(bg.style.backgroundImage.indexOf('https://example.com/sky.jpg') !== -1,
+    'wallpaper url applied, got ' + bg.style.backgroundImage)
+
+  // 壁纸必须存在单独的键里 —— 否则每拖一次滑块都要重写几百 KB
+  assert.equal(ctx.storage.get('dsh-eta-forecast:wallpaper'), 'https://example.com/sky.jpg')
+  const settings = JSON.parse(ctx.storage.get('dsh-eta-forecast:v1') || '{}')
+  assert.equal(settings.wallpaper, undefined, 'wallpaper must NOT be inside the settings blob')
+
+  buttonOf(panel, '清除壁纸').dispatch('click', CLICK)
+  assert.equal(ctx.widget.getAttribute('data-wallpaper'), null)
+  assert.equal(ctx.storage.has('dsh-eta-forecast:wallpaper'), false)
+})
+
+test('空链接不会把壁纸清掉（避免误触）', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const panel = await openPanel(ctx)
+
+  const url = inputOf(panel, 'text')
+  url.value = 'https://example.com/a.jpg'
+  buttonOf(panel, '用链接').dispatch('click', CLICK)
+  assert.equal(ctx.widget.getAttribute('data-wallpaper'), '1')
+
+  url.value = '   '
+  buttonOf(panel, '用链接').dispatch('click', CLICK)
+  assert.equal(ctx.widget.getAttribute('data-wallpaper'), '1', 'blank url must be a no-op, not a clear')
+})
+
+test('模糊与暗化只作用于壁纸层，不污染卡片本身', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const panel = await openPanel(ctx)
+
+  const url = inputOf(panel, 'text')
+  url.value = 'https://example.com/b.jpg'
+  buttonOf(panel, '用链接').dispatch('click', CLICK)
+
+  const ranges = allOf(panel, 'dsh-eta-row')
+    .map((row) => inputOf(row, 'range'))
+    .filter(Boolean)
+  // [缩放, 模糊, 暗化, 卡片不透明度]
+  assert.equal(ranges.length, 4, 'expected zoom + blur + dim + alpha sliders')
+
+  ranges[1].value = '8'
+  ranges[1].dispatch('input')
+  ranges[2].value = '0.5'
+  ranges[2].dispatch('input')
+
+  const bg = allOf(ctx.widget, 'dsh-eta-bg')[0]
+  const dim = allOf(ctx.widget, 'dsh-eta-dim')[0]
+  const wash = allOf(ctx.widget, 'dsh-eta-wash')[0]
+  assert.equal(bg.style.filter, 'blur(8px)')
+  assert.equal(dim.style.background, 'rgba(0,0,0,0.5)')
+  // 卡片本身不该被模糊：模糊只属于壁纸层，卡片只有底色透明度。
+  assert.ok(!ctx.widget.style.filter, 'card itself must not be blurred')
+  // 卡片底色必须画在壁纸**上面**（wash 层），否则「卡片不透明度」是个死滑块，
+  // 深色壁纸上的深色文字也会糊成一片。
+  assert.ok(wash, 'wash layer must exist')
+  // 只断言「底色是半透明白」，不断言具体数值 —— 默认值会随观感调整，
+  // 写死在测试里只会让每次调参都得改测试。
+  assert.ok(/^rgba\(255,255,255,0\.\d+\)$/.test(wash.style.background),
+    'wash must be a semi-transparent theme colour, got ' + wash.style.background)
+  assert.equal(ctx.widget.style.background, 'transparent', 'root bg must not sit under the wallpaper')
+})
+
+test('恢复默认把缩放、壁纸、位置、折叠全部还原', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const panel = await openPanel(ctx)
+
+  const zoom = inputOf(panel, 'range')
+  zoom.value = '40'
+  zoom.dispatch('input')
+  const url = inputOf(panel, 'text')
+  url.value = 'https://example.com/c.jpg'
+  buttonOf(panel, '用链接').dispatch('click', CLICK)
+  assert.equal(ctx.widget.getAttribute('data-wallpaper'), '1')
+
+  buttonOf(panel, '恢复默认').dispatch('click', CLICK)
+
+  assert.equal(ctx.widget.style.transform, '')
+  assert.equal(ctx.widget.getAttribute('data-wallpaper'), null)
+  assert.equal(ctx.storage.has('dsh-eta-forecast:wallpaper'), false)
+  const saved = JSON.parse(ctx.storage.get('dsh-eta-forecast:v1'))
+  assert.equal(saved.zoom, 100)
+  assert.equal(saved.collapsed, false)
+})
+
+test('点标题行上的按钮不会顺手把卡片拖走', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const head = ctx.widget.children[0]
+  const gear = head.children[3]
+
+  // 挂载时会把 right/bottom 折算成 left/top，所以基线不是 undefined。
+  const baselineLeft = ctx.widget.style.left
+  assert.ok(baselineLeft, 'mount must normalise the position to left/top')
+
+  // 模拟 pointerdown 落在齿轮上：target 是 BUTTON
+  head.dispatch('pointerdown', { button: 0, target: gear, clientX: 10, clientY: 10, pointerId: 1 })
+  head.dispatch('pointermove', { clientX: 400, clientY: 400, pointerId: 1 })
+  head.dispatch('pointerup', { pointerId: 1 })
+  assert.equal(ctx.widget.style.left, baselineLeft, 'button click must not start a drag')
+
+  // 落在标题文字上才应该拖
+  head.dispatch('pointerdown', { button: 0, target: head.children[0], clientX: 10, clientY: 10, pointerId: 2 })
+  head.dispatch('pointermove', { clientX: 300, clientY: 200, pointerId: 2 })
+  assert.notEqual(ctx.widget.style.left, baselineLeft, 'dragging from the title must move the card')
+  head.dispatch('pointerup', { pointerId: 2 })
 })

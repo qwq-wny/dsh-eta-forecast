@@ -8,3 +8,6 @@ Thumbs.db
 *.local
 .env
 .env.*
+
+# 视觉检查脚本产出的截图，不纳入版本管理
+shots/
