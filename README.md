@@ -199,7 +199,7 @@ demo.html           外观预览页，不参与插件运行
 cordis.patch.yml    bundle 挂载声明
 ```
 
-跑测试：
+## 跑测试与预览
 
 ```bash
 node --test "test/*.test.js"
