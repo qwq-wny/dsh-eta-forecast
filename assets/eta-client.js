@@ -25,6 +25,8 @@
   var STYLE_ID = 'dsh-eta-style'
   var ROOT_ID = 'dsh-eta-root'
   var PANEL_ID = 'dsh-eta-panel'
+  /** 锁定态下唯一还能摸到的那颗小锁。挂在 body 上，不跟卡片一起缩放。 */
+  var LOCK_ID = 'dsh-eta-lock'
   /**
    * 插件版本号 —— 由宿主在**下发这份脚本时**把占位符替换成 package.json 的
    * version（见 lib/index.js 的 loadClientJs）。客户端自己读不到 package.json
@@ -105,6 +107,9 @@
     // 隐藏标题行按钮，改由右键唤出菜单。默认关：新用户先看到按钮更好上手，
     // 等嫌碍事了再打开 —— 这个开关的意义是「我要一张干净的卡片」。
     menuHidden: false,
+    // 锁定挂件：整卡不接收鼠标，像音乐软件的桌面歌词锁定。
+    // 默认关 —— 一个点不到的东西，对第一次用的人只是「坏了」。
+    locked: false,
   }
 
   /* ---------- 挂载门槛 ---------- */
@@ -181,6 +186,7 @@
       dim: clampNumber(saved.dim, 0, 0.85, DEFAULTS.dim),
       cardAlpha: clampNumber(saved.cardAlpha, 0.15, 1, DEFAULTS.cardAlpha),
       menuHidden: saved.menuHidden === true,
+      locked: saved.locked === true,
     }
   }
 
@@ -281,6 +287,27 @@
     // 「隐藏菜单按钮」：整组按钮消失，卡片只剩标题与数据，改由右键唤出菜单。
     // 用 display:none 而不是 visibility —— 否则会留一块看不见但吃点击的空位。
     '#dsh-eta-root[data-menu-hidden="1"] .dsh-eta-btn{display:none}',
+    /**
+     * 「锁定挂件」：整卡不接收鼠标，像音乐软件的桌面歌词锁定。
+     *
+     * 网页端只能靠 CSS（`pointer-events:none`）；桌面端的穿透由渲染壳的命中判定
+     * 负责（见 runtime/electron-helper/desktop-renderer.js 的 hitTest），两边都关掉
+     * 才算真的「碰不到」。
+     *
+     * 唯一例外是那颗小锁（`#dsh-eta-lock`）—— 它挂在 body 上、不随卡片缩放，
+     * 所以缩到 25% 也点得中。没有它，锁上就等于把用户永久关在门外。
+     */
+    '#dsh-eta-root[data-locked="1"]{pointer-events:none}',
+    // 锁上之后标题行按钮一并不见：它们已经点不动了，留着只会让人以为还能用。
+    // 解开就自动回来（见 applyLocked）。
+    '#dsh-eta-root[data-locked="1"] .dsh-eta-btn{display:none}',
+    '#dsh-eta-lock{position:fixed;z-index:9998;box-sizing:border-box;width:22px;height:22px;',
+    'padding:0;border:.5px solid var(--dsw-alias-border-l4,rgba(127,127,127,.35));',
+    'border-radius:50%;background:var(--dsw-alias-bg-layer-3,#fff);',
+    'color:var(--dsw-alias-label-secondary,#5a6478);font:inherit;font-size:11px;line-height:1;',
+    'display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:.55;',
+    'box-shadow:0 2px 8px rgba(15,25,60,.18);transition:opacity .15s ease}',
+    '#dsh-eta-lock:hover{opacity:1}',
     '.dsh-eta-clock{display:flex;align-items:baseline;gap:7px;margin-top:7px}',
     '.dsh-eta-clock b{font-size:23px;font-weight:650;line-height:1.15;letter-spacing:-.4px;',
     'font-variant-numeric:tabular-nums}',
@@ -564,6 +591,7 @@
     applyAppearance()
     applyCollapsed()
     applyMenuHidden()
+    applyLocked()
     return root
   }
 
@@ -855,6 +883,26 @@
     menuRow.appendChild(menuToggle)
     uiGroup.appendChild(menuRow)
 
+    // 锁定：整卡不接收鼠标，只在右上角留一颗小锁可以解开。
+    var lockRow = el('div', 'dsh-eta-row')
+    var lockLabel = el('label', '', '锁定挂件')
+    lockLabel.title = '锁定后鼠标点不到卡片，只剩右上角那颗小锁可以解开'
+    var lockToggle = el('input')
+    lockToggle.type = 'checkbox'
+    lockToggle.className = 'dsh-eta-check'
+    lockToggle.addEventListener('change', function () {
+      setLocked(lockToggle.checked === true)
+      setHint(
+        appearance.locked
+          ? '已锁定：卡片点不动了，点右上角那颗锁解开'
+          : '已解锁，可以拖动和点按了',
+        'ok',
+      )
+    })
+    lockRow.appendChild(lockLabel)
+    lockRow.appendChild(lockToggle)
+    uiGroup.appendChild(lockRow)
+
     /* --- 显示位置：仅网页 / 仅桌面 / 两者 / 都不 --- */
     var whereGroup = el('div', 'dsh-eta-group')
     var whereRow = el('div', 'dsh-eta-row')
@@ -932,6 +980,7 @@
     panelNodes = {
       zoom: zoomRow, blur: blurRow, dim: dimRow, alpha: alphaRow,
       urlInput: urlInput, fileInput: fileInput, hint: hint, menuToggle: menuToggle,
+      lockToggle: lockToggle,
       whereSelect: whereSelect, whereHint: whereHint, memoryToggle: memoryToggle,
     }
 
@@ -1030,6 +1079,7 @@
       row.output.textContent = row.format(value)
     }
     if (panelNodes.menuToggle) panelNodes.menuToggle.checked = appearance.menuHidden === true
+    if (panelNodes.lockToggle) panelNodes.lockToggle.checked = appearance.locked === true
     if (panelNodes.whereSelect && displayMode) panelNodes.whereSelect.value = displayMode
     if (panelNodes.memoryToggle) panelNodes.memoryToggle.checked = memoryOn === true
   }
@@ -1192,14 +1242,18 @@
       dim: DEFAULTS.dim,
       cardAlpha: DEFAULTS.cardAlpha,
       menuHidden: DEFAULTS.menuHidden,
+      locked: DEFAULTS.locked,
       left: null,
       top: null,
       collapsed: false,
     })
     collapsed = false
     appearance.menuHidden = DEFAULTS.menuHidden
+    appearance.locked = DEFAULTS.locked
     applyCollapsed()
     applyMenuHidden()
+    // 锁定必须先解开：下面还要重排位置，锁着的卡片用户没法自己挪。
+    applyLocked()
     nodes.root.style.left = ''
     nodes.root.style.top = ''
     nodes.root.style.right = ''
@@ -1284,10 +1338,14 @@
    * 它是 fixed 定位、不参与缩放，所以 25% 时依然好点。
    */
   function updateHotspot() {
+    // 小锁的位置跟着卡片走，所以顺手在这里一起更新 —— updateHotspot 已经是
+    // 「几何变了」的统一入口（缩放/拖动/折叠/窗口 resize/每次渲染都会调）。
+    updateLockChip()
     // appearance 在挂载流程里晚于 applyCollapsed() 才赋值（见 build 的末尾），
     // 所以这里必须自己防御 —— 辅助函数不该因为调用时机就把整个挂载搞挂。
     if (!nodes || !appearance) return
-    var needHotspot = appearance.zoom < 60
+    // 锁定时不贴逃生热区：那块 44px 是「可点的」，留着等于给锁定开了个后门。
+    var needHotspot = appearance.zoom < 60 && !appearance.locked
     if (!needHotspot) {
       if (nodes.hotspot && nodes.hotspot.parentNode) {
         nodes.hotspot.parentNode.removeChild(nodes.hotspot)
@@ -1409,6 +1467,88 @@
     if (!nodes) return
     if (appearance.menuHidden) nodes.root.setAttribute('data-menu-hidden', '1')
     else nodes.root.removeAttribute('data-menu-hidden')
+  }
+
+  /* ---------- 锁定：整卡不接收鼠标，只留一颗小锁 ---------- */
+
+  /**
+   * 应用「锁定挂件」。
+   *
+   * 锁上之后整卡 pointer-events:none（网页端）＋ 渲染壳的命中判定不再认卡片
+   * （桌面端），也就是鼠标怎么点都碰不到它 —— 和音乐软件的桌面歌词锁定一个意思。
+   *
+   * 同时把设置面板收起来：面板是独立于卡片的另一块可交互区域，锁上了还留着一个
+   * 能改设置的窗口，等于锁了个寂寞。
+   */
+  function applyLocked() {
+    if (!nodes || !appearance) return
+    if (appearance.locked) {
+      nodes.root.setAttribute('data-locked', '1')
+      // 面板还开着就收掉 —— 锁定的语义是「我现在不想动它」。
+      if (panel && panel.getAttribute('data-hidden') !== '1') hidePanel()
+    } else {
+      nodes.root.removeAttribute('data-locked')
+    }
+    updateHotspot()
+  }
+
+  /**
+   * 锁定时唯一还能摸到的东西：卡片右上角那颗小锁。
+   *
+   * 为什么必须挂在 body 上而不是卡片里：卡片本身已经 pointer-events:none，
+   * 挂在里面的任何东西都跟着一起失效 —— 那就再也解不开了，用户只能手改
+   * localStorage。挂 body 还能躲开 transform: scale()，缩到 25% 也点得中。
+   *
+   * 位置钉在卡片可视盒子的右上角（getBoundingClientRect 才是缩放后的真实尺寸），
+   * 锁定态标题行按钮是隐藏的，那块地方本来就空着。
+   */
+  function updateLockChip() {
+    if (!nodes || !appearance) return
+    if (!appearance.locked) {
+      if (nodes.lock && nodes.lock.parentNode) nodes.lock.parentNode.removeChild(nodes.lock)
+      nodes.lock = null
+      return
+    }
+    if (!nodes.lock) {
+      var chip = el('button')
+      chip.id = LOCK_ID
+      chip.type = 'button'
+      chip.title = '已锁定：点一下解锁'
+      chip.textContent = '\uD83D\uDD12'
+      chip.addEventListener('click', function (event) {
+        event.stopPropagation()
+        setLocked(false)
+        setHint('已解锁，可以拖动和点按了', 'ok')
+      })
+      // 双击也别冒泡出去 —— 否则会顺手触发「双击标题行开设置」那条路。
+      chip.addEventListener('dblclick', function (event) {
+        event.stopPropagation()
+      })
+      document.body.appendChild(chip)
+      nodes.lock = chip
+    }
+    var rect = nodes.root.getBoundingClientRect()
+    var size = 22
+    var left = rect.left + rect.width - size - 2
+    var top = rect.top + 2
+    // 卡片贴边时小锁可能被挤出视口，夹回来 —— 它是唯一的解锁入口，不能点不到。
+    var maxLeft = (window.innerWidth || 0) - size - 2
+    var maxTop = (window.innerHeight || 0) - size - 2
+    if (maxLeft > 0) left = Math.min(left, maxLeft)
+    if (maxTop > 0) top = Math.min(top, maxTop)
+    nodes.lock.style.width = size + 'px'
+    nodes.lock.style.height = size + 'px'
+    nodes.lock.style.left = Math.round(Math.max(2, left)) + 'px'
+    nodes.lock.style.top = Math.round(Math.max(2, top)) + 'px'
+  }
+
+  /** 改锁定态：落盘 + 立刻生效 + 同步面板。 */
+  function setLocked(next) {
+    if (!appearance) return
+    appearance.locked = next === true
+    writeSettings({ locked: appearance.locked })
+    applyLocked()
+    syncPanelValues()
   }
 
   /* ---------- 双击标题行也能开设置 ---------- */

@@ -229,9 +229,20 @@ async function main() {
     const card = document.getElementById('dsh-eta-root')
     const panel = document.getElementById('dsh-eta-panel')
     const panelOpen = panel && panel.getAttribute('data-hidden') !== '1'
+    /**
+     * 锁定态直接读卡片上的 data-locked，不额外开一条 IPC：
+     * 锁定本来就只有客户端在管（localStorage），再让渲染壳自己存一份状态，
+     * 迟早会出现「卡片显示已锁定、窗口却还认它可点」这种两边对不上的情况。
+     * DOM 属性是唯一真相。
+     */
+    const locked = Boolean(card && card.getAttribute('data-locked') === '1')
+    const chip = document.getElementById('dsh-eta-lock')
     return geometry.hitTestPoint({
-      card: card ? card.getBoundingClientRect() : null,
-      panel: panelOpen ? panel.getBoundingClientRect() : null,
+      // 锁定时卡片与面板都不算命中区 —— 否则窗口在卡片那一块仍会抢走鼠标，
+      // 下层的应用就点不到了，「碰不到」只做了一半。
+      card: !locked && card ? card.getBoundingClientRect() : null,
+      panel: !locked && panelOpen ? panel.getBoundingClientRect() : null,
+      chip: chip ? chip.getBoundingClientRect() : null,
     }, clientX, clientY)
   }
 

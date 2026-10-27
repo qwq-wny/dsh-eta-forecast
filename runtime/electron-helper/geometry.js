@@ -49,7 +49,11 @@ function moveWindow(input) {
  * 就被判成「不在挂件上」→ 整窗翻回点击穿透 → 面板点不动。
  * 面板在桌面端从来点不了，就是这个原因。
  *
- * @param {object} rects {card: DOMRect|null, panel: DOMRect|null}
+ * 第三个矩形 chip 是「锁定」时才会出现的那颗小锁：锁定态下卡片本身不再可交互
+ * （渲染壳会把 card 传成 null），但小锁必须能点 —— 它是唯一的解锁入口，
+ * 漏了就等于把用户永久锁在外面。
+ *
+ * @param {object} rects {card: DOMRect|null, panel: DOMRect|null, chip?: DOMRect|null}
  * @param {number} x 窗口内坐标
  * @param {number} y
  * @returns {boolean}
@@ -59,7 +63,9 @@ function hitTestPoint(rects, x, y) {
     && rect.width > 0 && rect.height > 0
     && x >= rect.left && x <= rect.right
     && y >= rect.top && y <= rect.bottom
-  return inside(rects && rects.card) || inside(rects && rects.panel)
+  return inside(rects && rects.card)
+    || inside(rects && rects.panel)
+    || inside(rects && rects.chip)
 }
 
 /**

@@ -1541,3 +1541,109 @@ test('没有 screenX 时退回 client 坐标（老浏览器/垫片）', async ()
   assert.equal(moves[0].dx, -60, 'fallback must use clientX when screenX is absent')
   assert.equal(moves[0].dy, -30)
 })
+
+/* ---------- 锁定挂件（整卡点不到，只留一颗小锁） ---------- */
+
+/** 在设置面板里找「锁定挂件」那个 checkbox。锁定开关排在「隐藏菜单按钮」后面。 */
+function lockToggleOf(panel) {
+  const all = checkTogglesOf(panel)
+  // 面板里的顺序：隐藏菜单按钮 → 锁定挂件 → 记住我的设置（在显示位置那一组）
+  return all[1]
+}
+
+test('设置面板有「锁定挂件」开关，默认关着', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const panel = await openPanel(ctx)
+
+  const toggle = lockToggleOf(panel)
+  assert.ok(toggle, 'the panel must offer a 锁定挂件 checkbox')
+  assert.equal(toggle.checked, false, 'a lock nobody asked for only reads as broken')
+  assert.equal(ctx.widget.getAttribute('data-locked'), null, 'unlocked by default')
+  assert.equal(ctx.doc.getElementById('dsh-eta-lock'), null, 'no lock chip until locked')
+})
+
+test('打开「锁定挂件」：卡片标记为已锁定，并出现一颗解锁小锁', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const panel = await openPanel(ctx)
+
+  const toggle = lockToggleOf(panel)
+  toggle.checked = true
+  toggle.dispatch('change')
+
+  assert.equal(ctx.widget.getAttribute('data-locked'), '1',
+    'the card must carry data-locked so CSS can kill pointer-events')
+  const chip = ctx.doc.getElementById('dsh-eta-lock')
+  assert.ok(chip, 'a lock without a way out would trap the user forever')
+  // 小锁必须挂在 body 上：卡片本身 pointer-events:none，挂在里面等于一起失效。
+  assert.equal(chip.parentNode, ctx.doc.body,
+    'the unlock chip must live on body, outside the pointer-events:none card')
+  const saved = JSON.parse(ctx.storage.get('dsh-eta-forecast:v1'))
+  assert.equal(saved.locked, true)
+})
+
+test('锁定后设置面板被收起（锁着还留着个能改设置的窗口就等于没锁）', async () => {
+  const ctx = bootClient([{ ok: true, now: Date.now(), sessions: [] }])
+  await new Promise((resolve) => setImmediate(resolve))
+  const panel = await openPanel(ctx)
+
+  const toggle = lockToggleOf(panel)
+  toggle.checked = true
+  toggle.dispatch('change')
+
+  assert.equal(panel.getAttribute('data-hidden'), '1',
+    'locking must close the settings panel')
+})
+
+test('点小锁就解锁：标记消失、小锁消失、设置落盘', async () => {
+  const ctx = bootClient(
+    [{ ok: true, now: Date.now(), sessions: [] }],
+    { storage: { 'dsh-eta-forecast:v1': JSON.stringify({ locked: true }) } },
+  )
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(ctx.widget.getAttribute('data-locked'), '1', 'locked state must survive a reload')
+
+  const chip = ctx.doc.getElementById('dsh-eta-lock')
+  assert.ok(chip, 'the chip must be there while locked')
+  chip.dispatch('click', CLICK)
+
+  assert.equal(ctx.widget.getAttribute('data-locked'), null, 'clicking the chip must unlock')
+  assert.equal(ctx.doc.getElementById('dsh-eta-lock'), null, 'and remove itself')
+  const saved = JSON.parse(ctx.storage.get('dsh-eta-forecast:v1'))
+  assert.equal(saved.locked, false)
+})
+
+test('锁定时不贴 44px 逃生热区（那块是「可点的」，等于给锁定开后门）', async () => {
+  const ctx = bootClient([
+    { ok: true, now: Date.now(), sessions: [] }],
+    { storage: { 'dsh-eta-forecast:v1': JSON.stringify({ zoom: 45 }) } },
+  )
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.ok(ctx.doc.getElementById('dsh-eta-hotspot'), 'small zoom normally gets a hotspot')
+
+  const panel = await openPanel(ctx)
+  const toggle = lockToggleOf(panel)
+  toggle.checked = true
+  toggle.dispatch('change')
+
+  assert.equal(ctx.doc.getElementById('dsh-eta-hotspot'), null,
+    'locking must remove the clickable escape hatch')
+  assert.ok(ctx.doc.getElementById('dsh-eta-lock'), 'but the unlock chip stays')
+})
+
+test('恢复默认会把锁定一起解开', async () => {
+  const ctx = bootClient(
+    [{ ok: true, now: Date.now(), sessions: [] }],
+    { storage: { 'dsh-eta-forecast:v1': JSON.stringify({ locked: true }) } },
+  )
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(ctx.widget.getAttribute('data-locked'), '1')
+
+  const panel = await openPanel(ctx)
+  buttonOf(panel, '恢复默认').dispatch('click', CLICK)
+
+  assert.equal(ctx.widget.getAttribute('data-locked'), null, 'reset must unlock')
+  const saved = JSON.parse(ctx.storage.get('dsh-eta-forecast:v1'))
+  assert.equal(saved.locked, false)
+})

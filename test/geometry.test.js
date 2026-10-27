@@ -167,3 +167,18 @@ test('窗口贴着工作区左上角时，锚定不会把它推出边界', () =>
   assert.ok(next.x + next.width <= AREA.x + AREA.width)
   assert.ok(next.y + next.height <= AREA.y + AREA.height)
 })
+test('锁定态：卡片不参与命中，但那颗小锁必须能点', () => {
+  // 锁定时渲染壳把 card 传成 null —— 卡片那一整块都该穿透给下层的应用。
+  assert.equal(hitTestPoint({ card: null, panel: null, chip: null }, 200, 550), false,
+    'a locked card must let clicks through')
+
+  const CHIP = { left: 310, top: 472, right: 332, bottom: 494, width: 22, height: 22 }
+  assert.equal(hitTestPoint({ card: null, panel: null, chip: CHIP }, 320, 482), true,
+    'the unlock chip is the only way back in — it must stay clickable')
+  // 小锁之外仍然穿透（否则整窗又变成一堵墙）
+  assert.equal(hitTestPoint({ card: null, panel: null, chip: CHIP }, 200, 550), false)
+})
+
+test('不传 chip 时行为不变（老调用点不需要改）', () => {
+  assert.equal(hitTestPoint({ card: CARD, panel: null }, 200, 550), true)
+})
