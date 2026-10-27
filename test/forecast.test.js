@@ -279,19 +279,21 @@ test('步数外推的置信度不会冒充「较准」', () => {
 
 /* ---------- 超时：超过预测之后不再演倒计时，并把误差学回来 ---------- */
 
-test('跑过预测终点（含宽容期）后标记超时，且**仍然给重估时间**', () => {
+test('跑过预测终点且实时估计也认同「快做完了」时标记超时，且**仍然给重估时间**', () => {
   const state = startedSession()
   state.stepHistory.push(20, 20, 20) // 一轮通常 20 步
-  // 先拿一次预测（锚定 turnFirstPredictedMs）
-  const t1 = feedSteps(state, 6, T0 + 1000, 3000)
+  // 早期样本攒够时给出「成熟预测」锚点（每步 60s，按 24 步先验）
+  const t1 = feedSteps(state, 6, T0 + 1000, 60_000)
   const first = forecastSession(state, t1 + 500)
   assert.ok(first.remainMs > 0, 'sanity: an early forecast exists')
   assert.equal(first.overtime, false, 'not overtime yet')
 
-  // 一路走到远超「预测的总时长」（预测 ≈ 20-6=14 步 × 3s ≈ 42s）+ 90s 宽容期
-  const late = feedSteps(state, 8, t1 + 2000, 60_000) // 每步 60 秒：迅速越过预测
+  // 继续 step，活儿比先验预计的多（26 步 > 24 步先验），且每步都慢。
+  // 走到远超「预测总时长 + 宽容期」，且实时估计的「总时长」已收拢到截止点附近
+  // （剩余步数所剩无几）→ 真·超出预估，亮超时。
+  const late = feedSteps(state, 20, t1 + 2000, 60_000)
   const snap = forecastSession(state, late + 1000)
-  assert.equal(snap.overtime, true, 'must be flagged overtime past the anchor + grace')
+  assert.equal(snap.overtime, true, 'must be flagged overtime when past the deadline AND nearly done')
   assert.ok(snap.overtimeMs > 0, 'overtimeMs should measure how far past the deadline')
   // 超时后**保留** remainMs：那是「按现有样本重估还要多久」。
   // 之前这里归 null，结果整整一轮只显示「已超时 N 分」、再没有任何时间信息 ——
@@ -299,6 +301,24 @@ test('跑过预测终点（含宽容期）后标记超时，且**仍然给重估
   assert.ok(snap.remainMs > 0,
     'a revised estimate must survive overtime (it is what the UI shows as 重估还要 M 分)')
   assert.ok(snap.etaAt > snap.updatedAt, 'etaAt follows the revised estimate')
+})
+
+test('越过承诺截止点但实时估计仍说「还有很久」时不喊超时（灭掉长轮假阳性）', () => {
+  const state = startedSession()
+  state.stepHistory.push(20, 20, 20) // 一轮通常 20 步
+  // 早期样本攒够时的「成熟预测」很乐观（只基于最初的快节奏）
+  const t1 = feedSteps(state, 6, T0 + 1000, 3000)
+  forecastSession(state, t1 + 500) // 锚定（估计 ≈ 14 步 × 3s ≈ 42s）
+
+  // 随后活儿明显变多/变慢：实时估计一路涨到「还有 6 分钟以上」
+  const t2 = feedSteps(state, 8, t1 + 2000, 60_000) // 每步 60 秒，把剩余估计顶上去
+  const snap = forecastSession(state, t2 + 1000)
+  // 此时已越过 42s 的乐观承诺很久，但细化估计的总时长（elapsed+剩余）仍远超承诺截止点
+  // → 不该闪「已超时」，让倒计时继续站岗（这正是用户抱怨的「经常超时」的来源）。
+  assert.equal(snap.overtime, false,
+    'must NOT flash overtime when the live estimate says the work has grown well past the deadline')
+  assert.ok(snap.remainMs > 0,
+    'the live estimate should still report remaining time while suppressed')
 })
 
 test('宽容期内不闪「超时」', () => {

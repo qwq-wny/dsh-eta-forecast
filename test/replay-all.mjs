@@ -222,6 +222,21 @@ function loadBefore(ref) {
   })
 }
 
+/**
+ * 加载一份实验副本（通常是 `.dbg-*.mjs`）。
+ * 存在的意义：调超时/夹取这类参数时，必须能**并排**看两组数字，
+ * 否则每次都要改文件、跑一遍、再改回来，中间任何一次忘记还原都会污染结论。
+ */
+async function loadVariant(filePath) {
+  const abs = path.resolve(REPO, filePath)
+  const source = fs.readFileSync(abs, 'utf8')
+  const tmp = path.join(os.tmpdir(), `dsh-eta-replay-variant-${process.pid}-${Math.random().toString(36).slice(2)}.mjs`)
+  fs.writeFileSync(tmp, source, 'utf8')
+  return import(`file://${tmp.replace(/\\/g, '/')}`).finally(() => {
+    try { fs.unlinkSync(tmp) } catch {}
+  })
+}
+
 async function main() {
   const argv = process.argv.slice(2)
   const argOf = (flag) => {
@@ -238,6 +253,14 @@ async function main() {
   if (beforeRef) {
     impls.unshift(await loadBefore(beforeRef))
     labels.unshift(`${beforeRef}（对比基线）`)
+  }
+  // --variant 可重复，每个文件并排多一组列。
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== '--variant') continue
+    const file = argv[i + 1]
+    if (!file) continue
+    impls.push(await loadVariant(file))
+    labels.push(path.basename(file).replace(/^\.dbg-|\.mjs$/g, ''))
   }
 
   const files = findSessionFiles(sessionsRoot)
