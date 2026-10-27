@@ -89,6 +89,11 @@
   var ZOOM_MAX = 100
   var ZOOM_DEFAULT = 100
 
+  /* 缩放低于这个值时自动切到「只剩时间 + 进度条」的缩扁布局。
+   * 70% 时说明文字只有 8px，已经读不动了 —— 与其糊成一团，不如把那块换成进度条。
+   * 边界放在 70 而不是恰好在 svg 可读临界点：滑块步长是 5，用户很容易停在 70。 */
+  var COMPACT_ZOOM_BELOW = 70
+
   /* 默认值不是拍脑袋定的：把 0.3 / 0.6 / 0.7 / 0.85 / 0.95 分别渲染出来比对过。
    * 0.3 时深色文字压在深蓝壁纸上糊成一片；0.95 时壁纸几乎看不见（等于没换）。
    * 0.65 + 0.28 暗化是「既看得出壁纸、字又清楚」的折中，用户可以自己再调。 */
@@ -301,29 +306,46 @@
     'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}',
     '.dsh-eta-pause{margin-top:7px;font-size:11px;font-weight:600;color:#b46214}',
     /**
-     * 折叠（最小化）：**只留进度条，不留文字** —— 折叠的意义就是「一眼看进度」，
-     * 留一行「预计完成」占着地方却什么信息都没给。
+     * 「只看进度条」布局。**两种触发**共用同一套规则：
+     *   - 手动折叠（`.dsh-eta-root-collapsed`，点 `−` 或面板里的收起）；
+     *   - 自动缩扁（`.dsh-eta-root-compact`，缩放低于 COMPACT_ZOOM_BELOW）。
+     *
+     * 后者是用户明确要求的：「缩小后我希望文字这一块是进度条」。12px 的字缩到
+     * 70% 就只剩 8px，读不出来却还把卡片撑得老高 —— 既然读不了，就别占地方，
+     * 把那一整块换成进度条，缩小的意义才成立。
      *
      * 用 data-bar 标记而不是 :has()：:has() 要 Chromium 105+，
      * 而这里的判定逻辑本来就在 JS 里（render 已经知道有没有进度），
      * 走属性更直接、也能被单测覆盖。
      */
-    '.dsh-eta-root-collapsed{display:flex;align-items:center;gap:8px}',
-    // 折叠时不显示会话胶囊：胶囊是「切换看哪条」的，和「只看进度」的意图冲突
-    '.dsh-eta-root-collapsed .dsh-eta-switcher{display:none}',
-    '.dsh-eta-root-collapsed .dsh-eta-head{order:2;flex:none;gap:4px}',
-    // body 留在布局里，但只放进度条出来
-    '.dsh-eta-root-collapsed .dsh-eta-body{order:1;flex:1;min-width:0;display:block}',
+    '.dsh-eta-root-collapsed,.dsh-eta-root-compact{display:flex;align-items:center;gap:8px}',
+    // 折叠/缩扁时不显示会话胶囊：胶囊是「切换看哪条」的，和「只看进度」的意图冲突
+    '.dsh-eta-root-collapsed .dsh-eta-switcher,.dsh-eta-root-compact .dsh-eta-switcher{display:none}',
+    '.dsh-eta-root-collapsed .dsh-eta-head,.dsh-eta-root-compact .dsh-eta-head{order:2;flex:none;gap:4px}',
+    // body 留在布局里，但只放进度条出来。
+    // 手动折叠是「最小化」，连剩余时间都不留；
+    // 缩扁是「还想要那个时间，但文字读不了了」—— 所以缩扁保留大号剩余时间，
+    // 把下面那堆 11~12px 的说明文字换成进度条。字缩到 70% 时倒可读，
+    // 缩到 45% 就只剩 5px，留着只是占地方。
+    '.dsh-eta-root-collapsed .dsh-eta-body,.dsh-eta-root-compact .dsh-eta-body{order:1;flex:1;min-width:0;display:block}',
     '.dsh-eta-root-collapsed .dsh-eta-body>*:not(.dsh-eta-bar){display:none}',
+    '.dsh-eta-root-compact .dsh-eta-body>*:not(.dsh-eta-bar):not(.dsh-eta-clock){display:none}',
     '.dsh-eta-root-collapsed .dsh-eta-bar{margin-top:0}',
-    '.dsh-eta-root-collapsed .dsh-eta-title{display:none}',
+    '.dsh-eta-root-compact .dsh-eta-clock{margin-top:0}',
+    // 缩扁时把「左右完成 · 还有 5 分 56 秒」这句藏掉：它在 165px 宽的卡里会折成
+    // 两行，字又只有 7px，糊成一团反而比没有更难看。大号「14:59」本身已经
+    // 说明了什么时候完事，细节留给 100% 的完整布局。
+    '.dsh-eta-root-compact .dsh-eta-clock span{display:none}',
+    '.dsh-eta-root-compact .dsh-eta-bar{height:8px;margin-top:5px}',
+    '.dsh-eta-root-collapsed .dsh-eta-title,.dsh-eta-root-compact .dsh-eta-title{display:none}',
     // 折叠时按钮提亮：卡片缩到 19px 高时按钮只有 8px，`.55` 的透明度在浅色壁纸上
     // 基本看不见，用户会找不到「展开」在哪。
-    '.dsh-eta-root-collapsed .dsh-eta-btn{opacity:.8}',
-    '.dsh-eta-root-collapsed .dsh-eta-btn:hover{opacity:1}',
+    '.dsh-eta-root-collapsed .dsh-eta-btn,.dsh-eta-root-compact .dsh-eta-btn{opacity:.8}',
+    '.dsh-eta-root-collapsed .dsh-eta-btn:hover,.dsh-eta-root-compact .dsh-eta-btn:hover{opacity:1}',
     // 没有进度可显示时退回标题文字 —— 否则折叠后就剩两个孤零零的按钮，
     // 用户认不出这是什么。（进度条本身在 data-on=0 时也是收起的。）
-    '.dsh-eta-root-collapsed[data-bar="0"] .dsh-eta-title{display:block}',
+    '.dsh-eta-root-collapsed[data-bar="0"] .dsh-eta-title,',
+    '.dsh-eta-root-compact[data-bar="0"] .dsh-eta-title{display:block}',
     '.dsh-eta-badge{font-size:10.5px;padding:1px 6px;border-radius:99px;white-space:nowrap;',
     'background:rgba(127,127,127,.16)}',
     '.dsh-eta-badge[data-confidence="high"]{background:rgba(7,150,90,.16);color:#07974b}',
@@ -560,6 +582,9 @@
     }
     nodes.root.style.transformOrigin = 'top left'
     nodes.root.style.transform = zoom === 100 ? '' : 'scale(' + (zoom / 100) + ')'
+    // 缩到 70% 以下就把布局切到「时间 + 进度条」：这一步必须在算 anchored 位置之前，
+    // 因为它会改变卡片高度，先切再量才量得准。
+    applyCompact(zoom)
     if (before && before.width > 0 && before.height > 0) {
       var after = nodes.root.getBoundingClientRect()
       if (after.width > 0 && after.height > 0) {
@@ -576,6 +601,28 @@
     }
     if (panel && panel.getAttribute('data-hidden') !== '1') positionPanel()
     updateHotspot()
+  }
+
+  /**
+   * 缩到 COMPACT_ZOOM_BELOW 以下就自动切到缩扁布局（只留剩余时间 + 进度条）。
+   *
+   * 为什么是自动的、而不是再加一个开关：用户调缩放时脑子里想的本来就是
+   * 「我要它小」，不是「我要它小、并且文字还在但读不出来」。多一个开关就是多一次
+   * 需要他理解的设计决策 —— 而这件事完全可以由缩放值本身推出来。
+   *
+   * 只挂 class，不碰 `collapsed` 变量：手动折叠是「用户意图」，缩扁是「布局推导」。
+   * 两者可以叠加，但推导层不能反过来改写用户意图 —— 否则把缩放拖回 100%
+   * 就再也展不开了。
+   */
+  function applyCompact(zoom) {
+    if (!nodes) return
+    var wasCompact = nodes.root.classList.contains('dsh-eta-root-compact')
+    var compact = zoom < COMPACT_ZOOM_BELOW
+    if (compact) nodes.root.classList.add('dsh-eta-root-compact')
+    else nodes.root.classList.remove('dsh-eta-root-compact')
+    // 切布局会改卡片高度（146px ↔ 约 60px），桌面浮窗得跟着改尺寸 ——
+    // 否则那片透明区一直留着，还会一直参与命中判定。
+    if (wasCompact !== compact) emitDesktop('dsh-eta-desktop-fit', { open: false })
   }
 
   function applyAppearance() {

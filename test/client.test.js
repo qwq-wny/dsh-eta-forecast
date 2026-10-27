@@ -1085,6 +1085,84 @@ test('隐藏挂件时热区一起消失', async () => {
     'zooming back to full size must remove the escape hotspot')
 })
 
+/* ---------- 缩放自动缩扁：文字块换成进度条 ---------- */
+
+/**
+ * 把缩放拖到某个值。面板已经开着就复用，不重复点齿轮 ——
+ * 齿轮是开关，再点一次会把面板关掉。
+ */
+async function zoomTo(ctx, value) {
+  let panel = ctx.doc.getElementById('dsh-eta-panel')
+  if (!panel || panel.getAttribute('data-hidden') === '1') panel = await openPanel(ctx)
+  const zoom = inputOf(panel, 'range')
+  zoom.value = String(value)
+  zoom.dispatch('input')
+  return ctx.widget
+}
+
+test('缩到 70% 以下自动切缩扁布局：只剩时间 + 进度条', async () => {
+  const ctx = bootClient([runningWithProgress()])
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(ctx.widget.classList.contains('dsh-eta-root-compact'), false,
+    '100% 时是完整布局，不该一上来就缩扁')
+
+  await zoomTo(ctx, 65)
+  assert.equal(ctx.widget.classList.contains('dsh-eta-root-compact'), true,
+    '低于 70% 必须切到缩扁布局 —— 用户的诉求是「缩小后文字这一块变成进度条」')
+})
+
+test('缩扁布局不碰用户手动折叠的意图', async () => {
+  const ctx = bootClient([runningWithProgress()])
+  await new Promise((resolve) => setImmediate(resolve))
+
+  // 缩扁只加 class，不该顺手把「折叠」这个用户意图一起改掉
+  await zoomTo(ctx, 50)
+  assert.equal(ctx.widget.classList.contains('dsh-eta-root-collapsed'), false,
+    'automatic compacting must not rewrite the manual collapse state')
+
+  // 放大回去就恢复完整布局
+  await zoomTo(ctx, 100)
+  assert.equal(ctx.widget.classList.contains('dsh-eta-root-compact'), false,
+    'zooming back to 100% must restore the full layout')
+})
+
+test('缩扁布局里进度条仍然可见（有进度时）', async () => {
+  const ctx = bootClient([runningWithProgress()])
+  await new Promise((resolve) => setImmediate(resolve))
+  await zoomTo(ctx, 55)
+
+  const bar = nodeOf(ctx.widget, 'dsh-eta-bar')
+  assert.equal(bar.getAttribute('data-on'), '1',
+    'the compact layout exists precisely to show this bar')
+  assert.equal(ctx.widget.getAttribute('data-bar'), '1')
+})
+
+test('缩扁 + 没有进度时退回标题，不至于只剩两个按钮', async () => {
+  const now = Date.now()
+  const ctx = bootClient([{
+    ok: true, now,
+    sessions: [{
+      id: 's1', title: '刚开始', phase: 'running', elapsedMs: 3000,
+      remainMs: null, etaAt: null, confidence: 'none', source: 'none',
+      progress: null, progressSource: 'none', total: 0, completed: 0, inProgress: 0, pending: 0,
+      currentTask: '', steps: 1, paused: false, pausedMs: 0, updatedAt: now,
+    }],
+  }])
+  await new Promise((resolve) => setImmediate(resolve))
+  await zoomTo(ctx, 40)
+  assert.equal(ctx.widget.classList.contains('dsh-eta-root-compact'), true)
+  assert.equal(ctx.widget.getAttribute('data-bar'), '0',
+    'compact + no progress must fall back to the title text')
+})
+
+test('缩扁后的缩放值会被记住，重启还缩扁', async () => {
+  const ctx = bootClient([runningWithProgress()])
+  await new Promise((resolve) => setImmediate(resolve))
+  await zoomTo(ctx, 45)
+  const saved = JSON.parse(ctx.storage.get('dsh-eta-forecast:v1'))
+  assert.equal(saved.zoom, 45)
+})
+
 /* ---------- 隐藏菜单按钮 + 右键菜单 ---------- */
 
 /** 在设置面板里找到「隐藏菜单按钮」那个 checkbox。 */
