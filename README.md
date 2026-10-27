@@ -125,9 +125,14 @@
 口径、分桶、灾难率的定义全部写死在回放脚本里，任何人都能在自己机器上复现：
 
 ```bash
-node test/replay-all.mjs                 # 跑本机 ~/.dsh/sessions 的全部日志
-node test/replay-all.mjs --before HEAD   # 与任意 git 版本逐点对比
+node test/replay-all.mjs                        # 跑本机 ~/.dsh/sessions 的全部日志
+node test/replay-all.mjs --before HEAD          # 与任意 git 版本逐点对比
+node test/replay-all.mjs --variant path/to/x.mjs # 并排第三组（调参时必须并排看）
 ```
+
+`--variant` 存在的意义：调超时/夹取这类参数时，改文件→跑→改回来这套流程里
+**任何一次忘记还原都会污染结论**（本轮就被坑过一次，得拿 `git show HEAD:` 当基线重跑）。
+给它一个实验副本路径，脚本会把它复制到临时目录再 import，不动工作树。
 
 `test/replay-accuracy.mjs` 保留着，但它只回放**单独一轮**，适合讲故事、
 不适合支撑「准确率提高了几个百分点」这种结论 —— 换一组参数就能翻盘。
