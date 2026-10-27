@@ -14,3 +14,4 @@ shots/
 
 # 临时调试脚本不进版本库
 .dbg-*.mjs
+.dbg-*.json

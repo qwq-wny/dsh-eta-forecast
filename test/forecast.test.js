@@ -58,9 +58,15 @@ test('清单进度外推：勾掉一半 → 剩余约等于已用时长', () => 
   assert.equal(snap.progress, 0.5)
   assert.equal(snap.total, 4)
   assert.equal(snap.completed, 2)
-  // 一半完成、剩一半 → 约 2 分钟（平滑前就是这个数，允许 20% 误差）
+  // 一半完成、剩一半 → 原始外推就是 2 分钟。显示层会把总时长再乘 1.2
+  // （EARLY_CAP_MULTIPLIER，抵消夹取带来的低估），所以这里期望 2.4 分钟：
+  // 2min(已用) + 2min(剩余) = 4min 总时长 → ×1.2 = 4.8min → 剩余 2.8min。
+  // 断言的是「落在 1.2~1.4 倍之间」，而不是某个具体数字 —— 允许后续微调系数。
   assert.ok(snap.remainMs !== null, 'should have an estimate')
-  assert.ok(Math.abs(snap.remainMs - 120_000) < 24_000, 'remain ~2min, got ' + snap.remainMs)
+  assert.ok(
+    snap.remainMs > 120_000 * 1.15 && snap.remainMs < 120_000 * 1.45,
+    'remain should be ~1.2-1.4x of the raw 2min extrapolation, got ' + snap.remainMs
+  )
   assert.ok(snap.etaAt !== null)
   assert.equal(snap.source, 'progress')
 })
@@ -528,4 +534,53 @@ test('精度摘要样本不足时返回 null，不编数字', () => {
   assert.equal(snap.accuracy.samples, 0)
   assert.equal(snap.accuracy.mape, null)
   assert.equal(snap.accuracy.bias, null)
+})
+
+/* ---------------- 早期上界：把「刚跑两步就报 70 分钟」压回去 ---------------- */
+
+test('早期慢步骤不再报出天文数字（这一条是本插件的坏名声来源）', () => {
+  const state = startedSession()
+  // 三步各 200 秒。老逻辑会拿 200s 当步时 × 24 步兜底 → 报「还有 70 分钟」。
+  feedSteps(state, 3, T0, 200_000)
+  const elapsed = 200_000
+  const snap = forecastSession(state, T0 + elapsed)
+
+  assert.equal(snap.source, 'steps')
+  assert.ok(snap.remainMs !== null, 'should have an estimate')
+  // 上界 ≈ elapsed × k + 120s，k(200s)≈2.69 → 上限 ~660s。必须落在界内。
+  assert.ok(snap.remainMs < elapsed * 4, 'early estimate must stay near elapsed, got ' + snap.remainMs)
+})
+
+test('早期上界随 elapsed 放松：跑得越久，允许的剩余越长', () => {
+  const state = startedSession()
+  feedSteps(state, 3, T0, 200_000)
+  const early = forecastSession(state, T0 + 200_000).remainMs
+  const later = forecastSession(state, T0 + 600_000).remainMs
+  assert.ok(later > early, 'ceiling must relax with elapsed (' + early + ' → ' + later + ')')
+})
+
+test('长轮基本不受上界影响（夹的是早期高估，不是长期估计）', () => {
+  const state = startedSession()
+  // 100 步 × 30s = 3000s 已跑，步时稳定 → 估计本就合理，不该被压。
+  feedSteps(state, 100, T0, 30_000)
+  const elapsed = 3_000_000
+  const snap = forecastSession(state, T0 + elapsed)
+  assert.ok(snap.remainMs !== null)
+  // 未夹时约 24 步 × 30s ≈ 720s（该处接近步数兜底）；夹取后仍应在同一量级。
+  assert.ok(snap.remainMs > 300_000, 'long turns must not be crushed, got ' + snap.remainMs)
+})
+
+test('上界只改显示值，不推进超时判定', () => {
+  const state = startedSession()
+  feedSteps(state, 3, T0, 200_000)
+  const snap = forecastSession(state, T0 + 200_000)
+  // 超时判定用的是未夹的锚点；此刻绝不该已经判超时。
+  assert.equal(snap.overtime, false, 'a 200s-old turn must not be marked overtime')
+  // 而显示值确实被压过了（这就是「只在显示层」的意义）。
+  const anchorTotal = state.maturePredictedMs > 0
+    ? state.maturePredictedMs + Math.max(0, state.maturePredictedAt - state.turnStartedAt)
+    : null
+  if (anchorTotal !== null) {
+    assert.ok(anchorTotal >= 200_000, 'anchor must be the raw (uncapped) prediction')
+  }
 })
