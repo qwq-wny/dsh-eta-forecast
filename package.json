@@ -10,6 +10,16 @@
     "progress",
     "widget"
   ],
+  "author": "qwq-wny <qwq-wny@users.noreply.github.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qwq-wny/dsh-eta-forecast.git"
+  },
+  "homepage": "https://github.com/qwq-wny/dsh-eta-forecast#readme",
+  "bugs": {
+    "url": "https://github.com/qwq-wny/dsh-eta-forecast/issues"
+  },
   "type": "module",
   "main": "lib/index.js",
   "files": [
@@ -20,12 +30,12 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "prepublishOnly": "npm test"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
-  },
-  "license": "MIT"
+  }
 }
