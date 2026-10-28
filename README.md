@@ -225,12 +225,34 @@ EWMA（α = 0.32）慢慢挪过去，用户看到的是一个在收敛的估计�
 
 ## 安装
 
+装完**重启 DSH**。挂件默认出现在右下角。
+
+**从 npm 装（推荐：预构建，装得最快）**
+
 ```bash
-# 本地开发（从目录链接，改完重启 DSH 即生效）
+dsh plugin --profile desktop add dsh-eta-forecast
+```
+
+已经在装了、要换新版本时**必须带上版本号**——pnpm 不会因为一个裸包名就重新解析已有的依赖：
+
+```bash
+dsh plugin --profile desktop add dsh-eta-forecast@latest      # 或 @1.6.2 这种精确版本
+```
+
+**不想用 npm**（直接从 GitHub 源码装）
+
+```bash
+dsh plugin --profile desktop add github:qwq-wny/dsh-eta-forecast
+```
+
+**本地开发**（从目录链接，改完重启 DSH 即生效）
+
+```bash
 dsh plugin --profile desktop add link:<本目录绝对路径>
 ```
 
-装完**重启 DSH**。挂件默认出现在右下角。
+`dsh plugin` 只是把参数转发给 profile 目录里的 pnpm，所以 `remove` / `why` / `update` 同样能用。
+`--profile <名字>` 换成你实际用的 profile（桌面版默认 `desktop`，网页版通常是 `web`）。
 
 ## 显示位置
 
