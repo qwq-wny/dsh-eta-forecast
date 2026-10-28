@@ -236,8 +236,11 @@ dsh plugin --profile desktop add dsh-eta-forecast
 已经在装了、要换新版本时**必须带上版本号**——pnpm 不会因为一个裸包名就重新解析已有的依赖：
 
 ```bash
-dsh plugin --profile desktop add dsh-eta-forecast@latest      # 或 @1.6.2 这种精确版本
+dsh plugin --profile desktop add dsh-eta-forecast@<版本号>     # 例如 dsh-eta-forecast@1.6.3
 ```
+
+⚠️ **别用 `@latest`**：pnpm 解析它用的是自己那份 registry 元数据缓存，刚发布的新版本常常还没进缓存，
+结果是「已满足、什么都不做」——而且**不报错**，看起来像装成功了（实测踩过）。精确版本号没有这个问题。
 
 **不想用 npm**（直接从 GitHub 源码装）
 
